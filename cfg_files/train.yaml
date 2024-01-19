@@ -1,0 +1,44 @@
+# experiment name
+note: train
+
+#project basic
+task: segnet_uv_vae #cat_mask/cat_heat/poseseg_uv
+
+#model basic
+lr: 0.0001
+rgb_mode: False #when ee_train it must be True
+use_mask: True
+uv_mask: True # use mask when calculate UV loss
+worker: 0
+virtual_mask: False
+
+poseseg: False
+pretrain_poseseg: True
+
+use_disc: False
+mesh_disc: False
+
+output: 'output' # '/data/bzhuang/Results/Pose2UV_results'
+
+#dataset
+trainset: Human36M_MOSH # Human36M_MOSH
+testset: Human36M_MOSH # Human36M_MOSH
+
+data_folder: /media/buzhenhuang/SSD/Human-Training-v3.12 #/ssd/bzhuang/Human-Training-v3.12
+
+model: pose2uv_res50
+epoch: 100
+batchsize: 20
+mode: train # train/test
+gpu_index: 0
+
+# pretrain
+pretrain: False
+pretrain_dir: data/best_segnet_uv_vae_epoch099_41.452427.pkl
+
+#loss
+train_loss: weight_L1 SMPL_Loss # weight_L1 SMPL_Loss
+test_loss: PA_MPJPE #L1  MPJPE PA_MPJPE
+
+#visualize
+viz: False

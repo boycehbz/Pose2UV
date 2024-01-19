@@ -1,0 +1,31 @@
+# experiment name
+note: eval_poseseg_test
+#project basic
+task: poseseg #cat_mask/cat_heat/poseseg_uv
+eval: True
+
+#model basic
+lr: 0.0001
+use_mask: True
+uv_mask: True
+worker: 16
+virtual_mask: False
+poseseg: True
+
+#dataset
+testset: COCO2017 # COCO2017
+
+data_folder: E:\Human-Training-v1.0
+
+model: poseseg
+epoch: 100
+batchsize: 10
+mode: train # test
+gpu_index: 0
+
+# pretrain
+pretrain: True
+pretrain_dir: pretrain_model\poseseg_epoch012.pkl
+
+#visualize
+viz: False

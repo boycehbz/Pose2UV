@@ -1,0 +1,37 @@
+# experiment name
+note: demo
+
+#project basic
+task: demo  #
+
+#model basic
+lr: 0.0001
+rgb_mode: False #when ee_train it must be True
+use_mask: True
+uv_mask: True # use mask when calculate UV loss
+worker: 0
+virtual_mask: False
+
+poseseg: False
+pretrain_poseseg: True
+
+use_disc: False
+mesh_disc: False
+
+output: 'output'
+
+#dataset
+data_folder: demo
+
+model: pose2uv_res50
+epoch: 100
+batchsize: 20
+mode: test # train/test
+gpu_index: 0
+
+# pretrain
+pretrain: True
+pretrain_dir: data/best_segnet_uv_vae_epoch099_41.452427.pkl
+
+#visualize
+viz: False
