@@ -10,7 +10,7 @@ The code for TIP 2022 paper "Pose2UV: Single-shot Multi-person Mesh Recovery wit
 ## Installation 
 Create conda environment and install dependencies.
 ```
-conda create -n crowdrec python=3.8
+conda create -n pose2uv python=3.8
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu111 # install pytorch
 ```
 Due to the licenses, please download SMPL model file [here](http://smplify.is.tuebingen.mpg.de/).
