@@ -50,7 +50,7 @@ class ResNet(nn.Module):
     def __init__(self, layers, block=Bottleneck):
         super().__init__()
         self.inplanes = 64
-        self.conv1 = nn.Conv2d(17, 64, kernel_size=7, stride=2, padding=3,
+        self.conv1 = nn.Conv2d(21, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)

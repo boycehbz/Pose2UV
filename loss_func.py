@@ -136,28 +136,40 @@ class POSE_L1(nn.Module):
     def forward(self, pred, gt, flag):
 
         loss = 0.
-        loss += self.L1Loss(pred[0][flag==1], gt[0][flag==1])
-        loss += self.L1Loss(pred[1][flag==1], gt[0][flag==1])
-        loss += self.L1Loss(pred[2][flag==1], gt[1][flag==1])
-        loss += self.L1Loss(pred[3][flag==1], gt[2][flag==1])
+        if (flag==1).max() == True:
+            loss += self.L1Loss(pred[0][flag==1], gt[0][flag==1])
+            loss += self.L1Loss(pred[1][flag==1], gt[0][flag==1])
+            loss += self.L1Loss(pred[2][flag==1], gt[1][flag==1])
+            loss += self.L1Loss(pred[3][flag==1], gt[2][flag==1])
+        else:
+            loss = torch.FloatTensor(1).fill_(0.).to(self.device)[0]
 
         return loss * self.weight
 
 class POSE_L2(nn.Module):
-    def __init__(self, device, dtype=torch.float32):
+    def __init__(self, device, visible_only=False, dtype=torch.float32):
         super(POSE_L2, self).__init__()
         self.dtype = dtype
         self.device = device
         self.L2Loss = nn.MSELoss()
         self.weight = 100.
+        self.visible_only = visible_only
 
-    def forward(self, pred, gt, flag):
+    def forward(self, pred, gt, flag, vis):
+
+        vis = vis[flag==1][:,:,None,None]
+
+        if self.visible_only:
+            vis = torch.ones_like(vis)
 
         loss = 0.
-        loss += self.L2Loss(pred[0][flag==1], gt[0][flag==1])
-        loss += self.L2Loss(pred[1][flag==1], gt[0][flag==1])
-        loss += self.L2Loss(pred[2][flag==1], gt[1][flag==1])
-        loss += self.L2Loss(pred[3][flag==1], gt[2][flag==1])
+        if (flag==1).max() == True:
+            loss += self.L2Loss(pred[-2][flag==1]*vis, gt[0][flag==1]*vis)
+            # loss += self.L2Loss(pred[1][flag==1]*vis, gt[0][flag==1]*vis)
+            # loss += self.L2Loss(pred[2][flag==1]*vis, gt[1][flag==1]*vis)
+            # loss += self.L2Loss(pred[3][flag==1]*vis, gt[2][flag==1]*vis)
+        else:
+            loss = torch.FloatTensor(1).fill_(0.).to(self.device)[0]
 
         return loss * self.weight
 
@@ -167,15 +179,18 @@ class MASK_L2(nn.Module):
         self.dtype = dtype
         self.device = device
         self.L2Loss = nn.MSELoss()
-        self.weight = 10.
+        self.weight = 1.
 
     def forward(self, pred, gt, flag):
 
         loss = 0.
-        loss += self.L2Loss(pred[0][flag==1], gt[0][flag==1])
-        loss += self.L2Loss(pred[1][flag==1], gt[0][flag==1])
-        loss += self.L2Loss(pred[2][flag==1], gt[1][flag==1])
-        loss += self.L2Loss(pred[3][flag==1], gt[2][flag==1])
+        if (flag==1).max() == True:
+            loss += self.L2Loss(pred[-2][:,0][flag==1], gt[1][flag==1])
+            # loss += self.L2Loss(pred[1][flag==1], gt[0][flag==1])
+            # loss += self.L2Loss(pred[2][flag==1], gt[1][flag==1])
+            # loss += self.L2Loss(pred[3][flag==1], gt[2][flag==1])
+        else:
+            loss = torch.FloatTensor(1).fill_(0.).to(self.device)[0]
 
         return loss * self.weight
 
@@ -190,10 +205,13 @@ class MASK_L1(nn.Module):
     def forward(self, pred, gt, flag):
 
         loss = 0.
-        loss += self.L1Loss(pred[0][flag==1], gt[0][flag==1])
-        loss += self.L1Loss(pred[1][flag==1], gt[0][flag==1])
-        loss += self.L1Loss(pred[2][flag==1], gt[1][flag==1])
-        loss += self.L1Loss(pred[3][flag==1], gt[2][flag==1])
+        if (flag==1).max() == True:
+            loss += self.L1Loss(pred[0][flag==1], gt[0][flag==1])
+            loss += self.L1Loss(pred[1][flag==1], gt[0][flag==1])
+            loss += self.L1Loss(pred[2][flag==1], gt[1][flag==1])
+            loss += self.L1Loss(pred[3][flag==1], gt[2][flag==1])
+        else:
+            loss = torch.FloatTensor(1).fill_(0.).to(self.device)[0]
 
         return loss * self.weight
 

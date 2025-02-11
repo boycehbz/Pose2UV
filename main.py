@@ -8,10 +8,10 @@
 import sys
 import torch
 import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from torch.utils.data import DataLoader
 from cmd_parser import parse_config
 from modules import init, DatasetLoader, ModelLoader, LossLoader, set_seed, seed_worker
-from utils.logger import savefig
 
 ###########global parameters#########
 # sys.argv = ['','--config=cfg_files/poseseg.yaml'] #train/test/poseseg
@@ -49,6 +49,8 @@ def main(**args):
             worker_init_fn=seed_worker,
             generator=g,
         )
+        if args.get('use_sch'):
+            model.load_scheduler(train_dataset.cumulative_sizes[-1])
     test_dataset = dataset.load_testset()
     test_loader = DataLoader(
         test_dataset,
@@ -71,11 +73,9 @@ def main(**args):
             #     model.save_model(epoch, task)
 
             if (epoch) % 1 == 0:
-                testing_loss = eval('%s_test' %task)(model, loss,test_loader, viz=viz, device=device)
+                testing_loss = eval('%s_test' %task)(model, loss,test_loader, epoch, viz=viz, device=device)
             else:
                 testing_loss = 9e10
-
-            model.scheduler.step(testing_loss)
 
             # save trained model
             model.save_best_model(testing_loss, epoch, task)
@@ -83,15 +83,12 @@ def main(**args):
         # testing mode
         elif epoch == 0 and mode == 'test':
             training_loss = -1.
-            testing_loss = eval('%s_test' %task)(model, loss, test_loader, viz=viz, device=device)
+            testing_loss = eval('%s_test' %task)(model, loss, test_loader, epoch, viz=viz, device=device)
 
 
         lr = model.optimizer.state_dict()['param_groups'][0]['lr']
         logger.append([int(epoch + 1), lr, training_loss, testing_loss])
         
-    # logger.close()
-    # logger.plot(['Train Loss', 'Test Loss'])
-    # savefig(os.path.join(out_dir, 'log.jpg'))
 
 
 if __name__ == "__main__":

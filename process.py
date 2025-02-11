@@ -1,25 +1,27 @@
-import torch
-import sys
-from torch.autograd import Variable
-from utils.imutils import *
-import numpy as np
-import os
 import cv2
 import sys
-import gc
-import torch.nn.functional as F
+import json
+import torch
+import numpy as np
 from tqdm import tqdm
+from torch.autograd import Variable
+from utils.imutils import *
+from alphapose_module.alphapose.utils.metrics import evaluate_mAP
+from utils.transforms import flip_back
+
 
 def to_device(data, device):
     temp = {}
     if 'mask' in data.keys():
         temp['mask'] = [item.to(device) for item in data['mask']]
-    if 'fullheat' in data.keys():
-        temp['fullheat'] = [item.to(device) for item in data['fullheat']]
-    if 'partialheat' in data.keys():
-        temp['partialheat'] = [item.to(device) for item in data['partialheat']]
+    if 'input_heat' in data.keys():
+        temp['input_heat'] = [item.to(device) for item in data['input_heat']]
+    if 'gt_heat' in data.keys():
+        temp['gt_heat'] = [item.to(device) for item in data['gt_heat']]
+    if 'img_path' in data.keys():
+        temp['img_path'] = data['img_path']
 
-    data = {k:v.to(device).float() for k, v in data.items() if k not in ['mask', 'fullheat', 'partialheat']}
+    data = {k:v.to(device).float() for k, v in data.items() if k not in ['mask', 'input_heat', 'gt_heat', 'img_path']}
 
     data = {**temp, **data}
 
@@ -80,6 +82,8 @@ def poseseg_train(model, loss_func, train_loader, epoch, num_epoch,\
     print('-' * 10 + 'model training' + '-' * 10)
     len_data = len(train_loader)
     model.model.train(mode=True)
+    if model.scheduler is not None:
+        model.scheduler.step()
     train_loss = 0.
     for i, data in enumerate(train_loader):
         batchsize = data['img'].size(0)
@@ -95,15 +99,19 @@ def poseseg_train(model, loss_func, train_loader, epoch, num_epoch,\
 
         # optimize
         model.optimizer.step()
+        if model.scheduler is not None:
+            model.scheduler.batch_step()
+
         loss_batch = loss.detach()
         print('epoch: %d/%d, batch: %d/%d, loss: %.6f' %(epoch, num_epoch, i, len_data, loss_batch), loss_dict)
         train_loss += loss_batch
     return train_loss/len_data
 
-def poseseg_test(model, loss_func, loader, viz=False, device=torch.device('cpu')):
+def poseseg_test(model, loss_func, loader, epoch, viz=False, device=torch.device('cpu')):
     print('-' * 10 + 'model testing' + '-' * 10)
     loss_all = 0.
     model.model.eval()
+    kpt_json = []
     with torch.no_grad():
         for i, data in enumerate(loader):
             batchsize = data['img'].size(0)
@@ -112,8 +120,40 @@ def poseseg_test(model, loss_func, loader, viz=False, device=torch.device('cpu')
             # forward
             pred = model.model(data)
 
+            FLIP_TEST = True
+            if FLIP_TEST:
+                flip_pairs = [[1, 2], [3, 4], [5, 6], [7, 8],
+                           [9, 10], [11, 12], [13, 14], [15, 16]]
+                # this part is ugly, because pytorch has not supported negative index
+                # input_flipped = model(input[:, :, :, ::-1])
+                origin_img = data['img']
+                input_flipped = np.flip(data['img'].cpu().numpy(), 3).copy()
+                input_flipped = torch.from_numpy(input_flipped).cuda()
+                input_heat_flipped = flip_back(data['input_heat'][0].cpu().numpy(), flip_pairs)
+                input_heat_flipped = torch.from_numpy(input_heat_flipped.copy()).cuda()
+
+                data['img'] = input_flipped
+                data['input_heat'][0] = input_heat_flipped
+                pred_flipped = model.model(data)
+                data['img'] = origin_img
+
+                # COCO flip pairs
+                heat64_flipped = flip_back(pred_flipped['preheat'][-2].cpu().numpy(), flip_pairs)
+                heat64_flipped = torch.from_numpy(heat64_flipped.copy()).cuda()
+
+                heat256_flipped = flip_back(pred_flipped['preheat'][-1].cpu().numpy(), flip_pairs)
+                heat256_flipped = torch.from_numpy(heat256_flipped.copy()).cuda()
+
+                pred['preheat'][-2] = (pred['preheat'][-2] + heat64_flipped) * 0.5
+                pred['preheat'][-1] = (pred['preheat'][-1] + heat256_flipped) * 0.5
+
             # calculate loss
-            loss, loss_dict = loss_func.calcul_testloss(pred, data)
+            if loss_func.test_loss_type[0] == 'mAP':
+                kpt_json = model.save_coco_results(kpt_json, data, pred)
+                loss = torch.FloatTensor(1).fill_(0.).to(device)[0]
+                loss_dict = {}
+            else:
+                loss, loss_dict = loss_func.calcul_testloss(pred, data)
 
             # save results
             if i < 1:
@@ -121,15 +161,24 @@ def poseseg_test(model, loss_func, loader, viz=False, device=torch.device('cpu')
                 results.update(imgs=data['img'].detach().cpu().numpy().astype(np.float32))
                 results.update(pred_heats=pred['preheat'][-1].detach().cpu().numpy().astype(np.float32))
                 results.update(pred_masks=pred['premask'][-1].detach().cpu().numpy().astype(np.float32))
-                results.update(gt_heats=data['partialheat'][-1].detach().cpu().numpy().astype(np.float32))
+                results.update(input_heats=pred['heatmap'].detach().cpu().numpy().astype(np.float32))
+                results.update(gt_heats=data['gt_heat'][-1].detach().cpu().numpy().astype(np.float32))
                 results.update(gt_masks=data['mask'][-1].detach().cpu().numpy().astype(np.float32))
                 model.save_poseseg_results(results, i, batchsize)
-                
+
             loss_batch = loss.detach()
             print('batch: %d/%d, loss: %.6f ' %(i, len(loader), loss_batch), loss_dict)
             loss_all += loss_batch
+
         loss_all = loss_all / len(loader)
-        return loss_all
+        sysout = sys.stdout
+        json_path = os.path.join(model.output, 'validate_kpt_epoch%04d.json' %epoch)
+        with open(json_path, 'w') as fid:
+            json.dump(kpt_json, fid)
+        res = evaluate_mAP(json_path, ann_type='keypoints', ann_file='data/person_visible_keypoints_val2017.json', halpe=None)
+        sys.stdout = sysout
+
+        return res
 
 def posenet_train(model, loss_func, train_loader, epoch, num_epoch,\
                         viz=False, device=torch.device('cpu')):
@@ -324,27 +373,28 @@ def segnet_uv_vae_train(model, loss_func, train_loader, epoch, num_epoch,\
         train_loss += loss_batch
     return train_loss/len_data
 
-def segnet_uv_vae_test(model, loss_func, loader, viz=False, device=torch.device('cpu')):
+def segnet_uv_vae_test(model, loss_func, loader, epoch, viz=False, device=torch.device('cpu')):
     print('-' * 10 + 'model testing' + '-' * 10)
     loss_all = 0.
     model.model.eval()
+    kpt_json = []
     with torch.no_grad():
         for i, data in enumerate(loader):
             batchsize = data['img'].size(0)
             data = to_device(data, device)
 
             # forward
-            output = model.model(data)
-            
+            pred = model.model(data)
+
             # calculate loss
-            loss, loss_dict = loss_func.calcul_testloss(output, data)
+            loss, loss_dict = loss_func.calcul_testloss(pred, data)
 
             # save results
-            if i < 4:
+            if i < 1:
                 results = {}
-                results.update(mask=output['mask'].detach().cpu().numpy().astype(np.float32))
-                results.update(heatmap=output['heatmap'].detach().cpu().numpy().astype(np.float32))
-                results.update(uv=output['pred_uv'].detach().cpu().numpy().astype(np.float32))
+                results.update(mask=pred['premask'][-1].detach().cpu().numpy().astype(np.float32))
+                results.update(heatmap=pred['preheat'][-1].detach().cpu().numpy().astype(np.float32))
+                results.update(uv=pred['pred_uv'].detach().cpu().numpy().astype(np.float32))
                 results.update(uv_gt=data['gt_uv'].detach().cpu().numpy().astype(np.float32))
                 results.update(rgb_img=data['img'].detach().cpu().numpy().astype(np.float32))
                 model.save_results(results, i, batchsize)
@@ -354,6 +404,50 @@ def segnet_uv_vae_test(model, loss_func, loader, viz=False, device=torch.device(
             loss_all += loss_batch
         loss_all = loss_all / len(loader)
         return loss_all
+
+def segnet_uv_vae_eval(model, loader, device=torch.device('cpu')):
+    print('-' * 10 + 'model evaluation' + '-' * 10)
+    loss_all = 0.
+    model.model.eval()
+    output = {'verts':{}}
+    gt = {'pose':{}, 'shape':{}, 'trans':{}, 'gender':{}, 'valid':{}}
+    with torch.no_grad():
+        for i, data in enumerate(tqdm(loader, total=len(loader))):
+            batchsize = data['img'].size(0)
+            data = to_device(data, device)
+
+            # forward
+            pred = model.model(data)
+
+            pred_verts = pred['pred_verts'].detach().cpu().numpy()
+
+            gt_pose = data['pose'].detach().cpu().numpy()
+            gt_shape = data['betas'].detach().cpu().numpy()
+            gt_trans = data['gt_cam_t'].detach().cpu().numpy()
+            gt_gender = data['gender'].detach().cpu().numpy()
+            valid = data['valid'].detach().cpu().numpy()
+
+            for batch in range(batchsize):
+                s_id = str(int(data['seq_id'][batch]))
+
+                if s_id not in output['verts'].keys():
+                    output['verts'][s_id] = [pred_verts[batch]]
+
+                    gt['pose'][s_id] = [gt_pose[batch]]
+                    gt['shape'][s_id] = [gt_shape[batch]]
+                    gt['trans'][s_id] = [gt_trans[batch]]
+                    gt['gender'][s_id] = [gt_gender[batch]]
+                    gt['valid'][s_id] = [valid[batch]]
+                else:
+                    output['verts'][s_id].append(pred_verts[batch])
+
+                    gt['pose'][s_id].append(gt_pose[batch])
+                    gt['shape'][s_id].append(gt_shape[batch])
+                    gt['trans'][s_id].append(gt_trans[batch])
+                    gt['gender'][s_id].append(gt_gender[batch])
+                    gt['valid'][s_id].append(valid[batch])
+
+        return output, gt
 
 def demo(model, yolox_predictor, alpha_predictor, loader, device=torch.device('cpu')):
     print('-' * 10 + 'model testing' + '-' * 10)
@@ -376,8 +470,8 @@ def demo(model, yolox_predictor, alpha_predictor, loader, device=torch.device('c
             # save results
             results = {}
             results.update(scales=data['scale'].astype(np.float32))
-            results.update(offsets=data['offset'].astype(np.float32))
-            results.update(heatmap=output['heatmap'].detach().cpu().numpy().astype(np.float32))
+            results.update(centers=data['center'].astype(np.float32))
+            results.update(heatmap=output['preheat'][-1].detach().cpu().numpy().astype(np.float32))
             results.update(uv=output['pred_uv'].detach().cpu().numpy().astype(np.float32))
             results.update(img=img)
             model.save_demo_results(results, i, img_path)

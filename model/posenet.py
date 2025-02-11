@@ -27,8 +27,15 @@ class maskBasicBlock(nn.Module):
         return self.relu(out)
 
 class PoseNet(nn.Module):
-    def __init__(self):
+    def __init__(self, use_full_heat=False):
         super(PoseNet, self).__init__()
+        self.num_joints = 17
+        self.use_full_heat = use_full_heat
+        if self.use_full_heat:
+            num_full = 17
+        else:
+            num_full = 0
+
         self.conv0_0 = nn.Conv2d(in_channels=3, out_channels=21, kernel_size=3, stride=2, padding=1, dilation=1)
         self.conv0_1 = nn.Conv2d(in_channels=3, out_channels=21, kernel_size=3, stride=2, padding=2, dilation=2)
         self.conv0_2 = nn.Conv2d(in_channels=3, out_channels=21, kernel_size=3, stride=2, padding=5, dilation=5)
@@ -37,15 +44,16 @@ class PoseNet(nn.Module):
         self.block2 = nn.Sequential(maskBasicBlock(128, 256, True),maskBasicBlock(256, 256))
         self.block3 = nn.Sequential(maskBasicBlock(256, 512, True),maskBasicBlock(512, 512))
         self.block4 = nn.Sequential(maskBasicBlock(512, 256),maskBasicBlock(256, 64))
-        self.block5 = nn.Sequential(maskBasicBlock(538, 256),maskBasicBlock(256, 64))
-        self.block6 = nn.Sequential(maskBasicBlock(269, 256),maskBasicBlock(256, 64))
-        self.block7 = nn.Sequential(maskBasicBlock(141, 128),maskBasicBlock(128, 64))
-        self.conv = nn.Conv2d(in_channels=64, out_channels=13, kernel_size=1)
+        self.block5 = nn.Sequential(maskBasicBlock(512 + self.num_joints + num_full, 256),maskBasicBlock(256, 64))
+        self.block6 = nn.Sequential(maskBasicBlock(256 + self.num_joints, 256),maskBasicBlock(256, 64))
+        self.block7 = nn.Sequential(maskBasicBlock(128 + self.num_joints, 128),maskBasicBlock(128, 64))
+        self.conv = nn.Conv2d(in_channels=64, out_channels=self.num_joints, kernel_size=1)
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
         self.softmax = nn.Softmax()
 
-    def forward(self, x, heat):
-        header = torch.cat([self.conv0_0(x),self.conv0_1(x),self.conv0_2(x)], 1)
+    def forward(self, x, full_heat=None):
+
+        header = torch.cat([self.conv0_0(x), self.conv0_1(x), self.conv0_2(x)], 1)
         header = self.lrelu(header)
         block1 = self.block1(header)
         block2 = self.block2(block1)
@@ -53,7 +61,10 @@ class PoseNet(nn.Module):
         heat_map0 = self.conv(self.block4(block3))
         heat_map0 = self.lrelu(heat_map0)
 
-        stage0 = torch.cat([heat_map0, heat, block3], 1)
+        if full_heat is not None and self.use_full_heat:
+            stage0 = torch.cat([heat_map0, full_heat, block3], 1)
+        else:
+            stage0 = torch.cat([heat_map0, block3], 1)
         heat_map1 = self.conv(self.block5(stage0))
         heat_map1 = self.lrelu(heat_map1)
 
@@ -73,12 +84,12 @@ class PoseNet(nn.Module):
 
 
 class posenet(nn.Module):
-    def __init__(self):
+    def __init__(self, use_full_heat=False):
         super(posenet, self).__init__()
-        self.posenet = PoseNet()
+        self.posenet = PoseNet(use_full_heat=use_full_heat)
 
-    def forward(self, crop, heat):
-        h0, h1, h2, h3, heat = self.posenet(crop, heat)
+    def forward(self, crop, full_heat=None):
+        h0, h1, h2, h3, heat = self.posenet(crop, full_heat=full_heat)
 
         return [h0, h1, h2, h3, heat]
 

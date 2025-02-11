@@ -8,6 +8,7 @@ __pycache__/
 
 output/
 pretrain_model/
+data/
 
 # Distribution / packaging
 .Python

@@ -1,8 +1,9 @@
 # experiment name
-note: poseseg
+note: test
 
 #project basic
 task: poseseg 
+use_sch: False
 
 #model basic
 lr: 0.0001
@@ -12,6 +13,7 @@ uv_mask: True # use mask when calculate UV loss
 worker: 0
 virtual_mask: False
 poseseg: True
+visible_only: True
 
 output: 'output' # '/data/bzhuang/Results/Pose2UV_results'
 
@@ -22,21 +24,21 @@ mesh_disc: False
 trainset: COCO_PoseSeg # COCO_PoseSeg
 testset: COCO_PoseSeg # COCO_PoseSeg
 
-data_folder: /media/buzhenhuang/SSD/Human-Training-v3.12 #/ssd/bzhuang/Human-Training-v3.12
+data_folder: G:\Human-Training-v3.12 #/ssd/bzhuang/Human-Training-v3.12
 
 model: poseseg
-epoch: 100
+epoch: 2000
 batchsize: 32
 mode: train # train/test
 gpu_index: 0
 
 # pretrain
 pretrain: False
-pretrain_dir: data/poseseg_epoch011.pkl
+pretrain_dir: pretrain_model\best_poseseg_epoch231_0.782912.pkl
 
 #loss
-train_loss: MASK_L2 POSE_L2 #inpaiting L1 partloss weight_L1 LPloss   #L1 L2 partloss weight_L1 LPloss priorloss shapeloss 
-test_loss: POSE_L1 #L1  MPJPE MASK_L1 POSE_L1
+train_loss: POSE_L2 MASK_L2 #POSE_L2 MASK_L2
+test_loss: mAP #POSE_L1 #L1  MPJPE MASK_L1 POSE_L1
 
 #visualize
 viz: False

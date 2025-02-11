@@ -42,11 +42,32 @@ class PoseSegData(base):
                 for key in frame.keys():
                     if key in ['img_path', 'h_w']:
                         continue
+
+                    gt_keypoints = np.array(frame[key]['halpe_joints_2d'], dtype=self.np_type)
+                    gt_bbox = np.array(frame[key]['bbox'], dtype=self.np_type).reshape(-1,)
+
+                    height, width = frame['h_w']
+
+                    x1, y1, x2, y2 = gt_bbox
+                    x1 = np.max((0, x1))
+                    y1 = np.max((0, y1))
+                    x2 = np.min((width - 1, x2))
+                    y2 = np.min((height - 1, y2))
+                    if x2 >= x1 and y2 >= y1:
+                        gt_bbox = np.array([x1, y1, x2, y2], dtype=self.np_type)
+                    else:
+                        continue
+
+                    # ignore objs without keypoints annotation
+                    vis = gt_keypoints[:,2]
+                    if vis.max() == 0:
+                        continue
+
                     self.img_size.append(frame['h_w'])
-                    self.pose2ds.append(np.array(frame[key]['halpe_joints_2d'], dtype=self.np_type))
+                    self.pose2ds.append(gt_keypoints)
                     self.pose2ds_pred.append(np.array(frame[key]['halpe_joints_2d_pred'], dtype=self.np_type).reshape(-1,3))
                     self.imnames.append(frame['img_path'])
-                    self.bboxs.append(np.array(frame[key]['bbox'], dtype=self.np_type).reshape(-1,))
+                    self.bboxs.append(gt_bbox)
                     self.masks.append(frame[key]['segmentation'])
                     
         del frame
@@ -113,7 +134,9 @@ class PoseSegData(base):
         
         # load data
         image_path = os.path.join(self.dataset_dir, self.imnames[index].replace('\\', '/')) 
+        img_id = int(os.path.basename(self.imnames[index].replace('\\', '/')).split('.')[0])
         img = cv2.imread(image_path)
+
         img_h, img_w = img.shape[:2]
         mask = self.masks[index]
         mask = self.annToMask(mask, img_h, img_w)
@@ -121,26 +144,72 @@ class PoseSegData(base):
         bbox = self.bboxs[index].reshape(-1, 2)
         lt = np.array(bbox[0])
         rb = np.array(bbox[1])
+
         # random select 2D pose
         rate = random()
+        if not self.is_train:
+            rate = 0
         if self.pose2ds_pred[index] is not None and rate < 0.5:
-            input_kp_2d = self.pose2ds_pred[index][self.halpe_to_lsp][self.lsp14_to_lsp13]
+            input_kp_2d = self.pose2ds_pred[index][:17].copy() #[self.halpe_to_lsp][self.lsp14_to_lsp13]
         elif self.pose2ds[index] is not None:
-            input_kp_2d = self.pose2ds[index][self.halpe_to_lsp][self.lsp14_to_lsp13]
+            input_kp_2d = self.pose2ds[index][:17].copy() #[self.halpe_to_lsp][self.lsp14_to_lsp13]
         else:
-            input_kp_2d = np.zeros((13, 3), dtype=self.np_type)
-        assert input_kp_2d.shape == (13,3)# and kp_2d[:,2].max() <= 1.5
+            input_kp_2d = np.zeros((17, 3), dtype=self.np_type)
+        assert input_kp_2d.shape == (17, 3)# and kp_2d[:,2].max() <= 1.5
 
-        gt_kp_2d = self.pose2ds[index][self.halpe_to_lsp][self.lsp14_to_lsp13]
+        gt_kp_2d = self.pose2ds[index][:17].copy() #[self.halpe_to_lsp][self.lsp14_to_lsp13]
 
         data = create_poseseg(img, mask, lt, rb, input_kp_2d, gt_kp_2d, self.smpl, self.generator, occlusions=self.occlusions, is_train=self.is_train)
+        data['img_id'] = img_id
+        data['img_path'] = image_path
+
+        return data
+
+    def new_aug(self, index=0):
+        
+        # load data
+        image_path = os.path.join(self.dataset_dir, self.imnames[index].replace('\\', '/')) 
+        img_id = int(os.path.basename(self.imnames[index].replace('\\', '/')).split('.')[0])
+        img = cv2.imread(image_path)
+        # img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        img_h, img_w = img.shape[:2]
+        mask = self.masks[index]
+        mask = self.annToMask(mask, img_h, img_w)
+
+        bbox = self.bboxs[index].reshape(-1, 2)
+        lt = np.array(bbox[0])
+        rb = np.array(bbox[1])
+
+        # random select 2D pose
+        rate = random()
+        if not self.is_train:
+            rate = 0
+        if self.pose2ds_pred[index] is not None and rate < 0.5:
+            input_kp_2d = self.pose2ds_pred[index][:17].copy() #[self.halpe_to_lsp][self.lsp14_to_lsp13]
+        elif self.pose2ds[index] is not None:
+            input_kp_2d = self.pose2ds[index][:17].copy() #[self.halpe_to_lsp][self.lsp14_to_lsp13]
+        else:
+            input_kp_2d = np.zeros((17, 3), dtype=self.np_type)
+        assert input_kp_2d.shape == (17, 3)# and kp_2d[:,2].max() <= 1.5
+
+        gt_kp_2d = self.pose2ds[index][:17].copy() #[self.halpe_to_lsp][self.lsp14_to_lsp13]
+
+        data = create_poseseg(img, mask, lt, rb, input_kp_2d, gt_kp_2d, self.smpl, self.generator, occlusions=self.occlusions, is_train=self.is_train)
+        data['img_id'] = img_id
+        data['img_path'] = image_path
 
         return data
 
 
-    def __getitem__(self, index):
 
-        data = self.create_data(index)
+    def __getitem__(self, index):
+        
+        new_aug = True
+        if new_aug:
+            data = self.new_aug(index)
+        else:
+            data = self.create_data(index)
 
         return data
 

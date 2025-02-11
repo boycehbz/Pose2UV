@@ -24,7 +24,7 @@ output: 'output'
 trainset: Human36M_MOSH # Human36M_MOSH Hi4D
 testset: Human36M_MOSH #VCLMP Human36M_MOSH Hi4D
 
-data_folder: /media/buzhenhuang/SSD/Human-Training-v3.12
+data_folder: G:\Human-Training-v3.12
 
 model: pose2uv_res50
 epoch: 100
@@ -34,7 +34,7 @@ gpu_index: 0
 
 # pretrain
 pretrain: True
-pretrain_dir: data/best_segnet_uv_vae_epoch099_41.452427.pkl
+pretrain_dir: pretrain_model\best_segnet_uv_vae_epoch036_46.359337.pkl
 
 #loss
 train_loss: weight_L1 SMPL_Loss # weight_L1 SMPL_Loss

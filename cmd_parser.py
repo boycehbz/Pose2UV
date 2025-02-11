@@ -155,7 +155,14 @@ def parse_config(argv=None):
                         default='',
                         type=str,
                         help='pretrain_disc_dir.')    
-                                      
+    parser.add_argument('--use_sch',
+                        default=False,
+                        type=lambda x: x.lower() in ['true', '1'],
+                        help='.')    
+    parser.add_argument('--visible_only',
+                        default=False,
+                        type=lambda x: x.lower() in ['true', '1'],
+                        help='.')   
     args = parser.parse_args()
     args_dict = vars(args)
     return args_dict

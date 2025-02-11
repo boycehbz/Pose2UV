@@ -7,20 +7,19 @@ import pycocotools.mask as mask_util
 from utils.imutils import *
 from utils.heatmap import gen_heatmap, heatmap_stand
 
-def create_UV_maps(image_path, mask, lt, rb, kp_2d, pose, shape, smpl, generator, occlusions=None, is_train=False, supervise_2d=False):
+def create_UV_maps(image_path, mask, lt, rb, kp_2d, gt_2d, pose, shape, smpl, generator, occlusions=None, is_train=False, supervise_2d=False):
     data = {}
-    # image_path = 'C:\\Users\\123\Documents\Human-Training-v3.12\Human36M_MOSH\\' + image_path
+
     # load data
-    image = cv2.imread(image_path)
-    if mask is not None:
-        img_mask = cv2.imread(mask, 0)
-        img_mask = cv2.threshold(img_mask, 127, 255, type=cv2.THRESH_BINARY)[1]
-        mask_flag = np.array([1], dtype=np.float32)
-        pose_flag = np.array([1], dtype=np.float32)
-    else:
-        img_mask = np.ones(image.shape[:2]) * 255
-        mask_flag = np.array([0], dtype=np.float32)
-        pose_flag = np.array([0], dtype=np.float32)
+    data_numpy = cv2.imread(
+                image_path, cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION
+            )
+    data_numpy = cv2.cvtColor(data_numpy, cv2.COLOR_BGR2RGB)
+
+    det_pose = kp_2d.copy()
+    det_vis = np.ones_like(det_pose) 
+    det_vis[:,2] = det_pose[:,2].copy()
+
 
     if kp_2d is None or kp_2d.max() < 1:
         pose_flag = np.array([0], dtype=np.float32)
@@ -197,23 +196,40 @@ def create_demo_data(image, lt, rb, kp_2d, occlusions=None, mask=None, is_train=
 
 def create_poseseg(image, mask, lt, rb, input_2d, gt_2d, smpl, generator, occlusions=None, is_train=False):
     data = {}
-    # image_path = 'C:\\Users\\123\Documents\Human-Training-v3.12\Human36M_MOSH\\' + image_path
-    # load data
 
-    # print(image_path, lt, rb)
+    # # vis input
+    # vis_inp = image.copy()
+    # for kp in input_2d:
+    #     if kp[2] == 0:
+    #         continue
+    #     vis_inp = cv2.circle(vis_inp, tuple(kp[:2].astype(np.int)), 5, (0,0,255), -1)
+    # vis_gt = image.copy()
+    # for kp in gt_2d:
+    #     if kp[2] == 0:
+    #         continue
+    #     vis_gt = cv2.circle(vis_gt, tuple(kp[:2].astype(np.int)), 5, (0,0,255), -1)
+    # img_mask = np.concatenate((image.copy(), cv2.cvtColor(mask.copy()*255, cv2.COLOR_GRAY2BGR)), axis=1)
+    # vis_pose = np.concatenate((vis_inp, vis_gt), axis=1)
+    # img = np.concatenate((img_mask, vis_pose), axis=0)
+    # vis_img('img_origin', img)
+
+    bbox = np.concatenate((lt.copy(), rb.copy()), axis=0)
+
+    pose_flag = np.array([1], dtype=np.float32)
     if mask is not None:
         img_mask = mask * 255
         img_mask = cv2.threshold(img_mask, 127, 255, type=cv2.THRESH_BINARY)[1]
         mask_flag = np.array([1], dtype=np.float32)
-        pose_flag = np.array([1], dtype=np.float32)
     else:
         img_mask = np.ones(image.shape[:2]) * 255
         mask_flag = np.array([0], dtype=np.float32)
-        pose_flag = np.array([0], dtype=np.float32)
 
     if input_2d is None or input_2d.max() < 1:
+        input_2d = np.zeros((17, 3))
+
+    # The person does not have pose annotation
+    if gt_2d[:,2].max() <= 1:
         pose_flag = np.array([0], dtype=np.float32)
-        input_2d = np.zeros((13, 3))
 
     if occlusions is not None:
         i = random.randint(0,len(occlusions)-1)
@@ -227,11 +243,11 @@ def create_poseseg(image, mask, lt, rb, input_2d, gt_2d, smpl, generator, occlus
         else:
             image = color_gamma_contrast(image)
         # used for the image that the target person is not in the center
-        image, img_mask, input_2d, gt_2d, lt, rb, s = scale_kp(image, img_mask, input_2d, gt_2d, lt, rb, img_size=256, aug=True)
-        image, img_mask, input_2d, gt_2d, lt, rb = croppad_kp(image, img_mask, input_2d, gt_2d, lt, rb, f=255, img_size=256, aug=True)
+        image, img_mask, input_2d, gt_2d, lt, rb, scale = scale_kp(image, img_mask, input_2d, gt_2d, lt, rb, img_size=256, aug=True)
+        image, img_mask, input_2d, gt_2d, lt, rb, offset = croppad_kp(image, img_mask, input_2d, gt_2d, lt, rb, f=255, img_size=256, aug=True)
     else:
-        image, img_mask, input_2d, gt_2d, lt, rb, s = scale_kp(image, img_mask, input_2d, gt_2d, lt, rb, img_size=256, aug=False)
-        image, img_mask, input_2d, gt_2d, lt, rb = croppad_kp(image, img_mask, input_2d, gt_2d, lt, rb, f=255, img_size=256, aug=False)
+        image, img_mask, input_2d, gt_2d, lt, rb, scale = scale_kp(image, img_mask, input_2d, gt_2d, lt, rb, img_size=256, aug=False)
+        image, img_mask, input_2d, gt_2d, lt, rb, offset = croppad_kp(image, img_mask, input_2d, gt_2d, lt, rb, f=255, img_size=256, aug=False)
 
     if occlusions is not None:
         image, img_mask = synthesize_occlusion(image, patch, patch_mask, lt, rb, img_mask)
@@ -244,40 +260,37 @@ def create_poseseg(image, mask, lt, rb, input_2d, gt_2d, smpl, generator, occlus
     # generate full heatmap 256*256*1
     coco_kp = input_2d
     heatmap_st = [heatmap_stand(s, s, k) for s, k in zip(heatmap_size, k_size)]
-    full_heatmaps = gen_heatmap(coco_kp, heatmap_st)
+    full_heatmaps = gen_heatmap(coco_kp, heatmap_st, label_format='coco')
     full_heat_inp = full_heatmaps
 
     # generate gt partial heatmap
     kp_out = np.zeros_like(coco_kp)
-    ind = 0
-    for kp in gt_2d:
-        if max(int(kp[1]), int(kp[0])) > 255 or min(int(kp[1]), int(kp[0]))<0:
-            ind += 1
+    for ind, kp in enumerate(gt_2d):
+        if max(int(kp[1]), int(kp[0])) > 255 or min(int(kp[1]), int(kp[0])) < 0:
             continue
         elif dst_mask[int(kp[1]),int(kp[0])] < 127:
-            ind += 1
             continue
         else:
             kp_out[ind] = kp
-            ind += 1
-    pheatmap_size = [16, 32, 64, 256]
-    pk_size = [1, 1, 1, 3]
+    kp_out[:,2][kp_out[:,2] > 1] = 1
+    vis = kp_out[:,2].copy()
+
+    pheatmap_size = [64, 256]
+    pk_size = [1, 3]
     heatmap_st = [heatmap_stand(s, s, k) for s, k in zip(pheatmap_size, pk_size)]
-    partial_heatmaps = gen_heatmap(kp_out, heatmap_st)
+    partial_heatmaps = gen_heatmap(kp_out, heatmap_st, label_format='coco')
     partial_heat_inp = partial_heatmaps
 
-    # #visualize occlusion uv
-    # cv2.imshow('rgb', dst_image/255)
-    # cv2.imshow('mask', dst_mask/255)
+    # #visualize heatmaps
     # tt = np.max(full_heat_inp[-1], axis=0)
     # gtt = convert_color(tt*255)
-    # dst = cv2.addWeighted(gtt,0.5, dst_image.astype(np.uint8),0.5,0)
-    # cv2.imshow('fullheat',dst)
+    # fullheat = cv2.addWeighted(gtt,0.5, dst_image.astype(np.uint8),0.5,0)
     # tt = np.max(partial_heat_inp[-1], axis=0)
     # gtt = convert_color(tt*255)
-    # dst = cv2.addWeighted(gtt,0.5, dst_image.astype(np.uint8),0.5,0)
-    # cv2.imshow('partialheat',dst)
-    # cv2.waitKey()
+    # partialheat = cv2.addWeighted(gtt,0.5, dst_image.astype(np.uint8),0.5,0)
+    # partialheat = cv2.putText(partialheat, 'Pose flag: ' + str(pose_flag[0]), (20,20),cv2.FONT_HERSHEY_COMPLEX,0.8,(255,191,105), 1)
+    # img = np.concatenate((dst_image.copy(), cv2.cvtColor(dst_mask, cv2.COLOR_GRAY2BGR), fullheat, partialheat), axis=1)
+    # vis_img('img', img)
 
     mask_size = [16, 32, 64, 256]
     mask_st = [mask_to_torch(cv2.resize(dst_mask, (s,s))) for s in mask_size]
@@ -292,8 +305,10 @@ def create_poseseg(image, mask, lt, rb, input_2d, gt_2d, smpl, generator, occlus
     data['partialheat'] = partial_heat_inp
     data['img'] = rgb_img
     data['input_kp2d'] = input_2d.copy()
-    data['scale'] = s
-
+    data['scale'] = scale
+    data['offset'] = offset
+    data['bbox'] = bbox
+    data['vis'] = vis
     return data
 
 def eval_handle(image_path, lt, rb, kp_2d, intri, gt_3d, pose, shape, smpl=None, occlusions=None, is_train=False):

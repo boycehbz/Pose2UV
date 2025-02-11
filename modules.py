@@ -13,10 +13,14 @@ import cv2
 from utils.imutils import *
 from datasets.MPDataLoader import MPData
 from datasets.MPEvalLoader import MPeval
+from datasets.eval_dataset import MP_Eval_Data
 from datasets.DemoDataLoader import DemoData
 from datasets.poseseg_data import PoseSegData
+from datasets.coco_v12 import COCODataset
 from utils.render import Renderer
 from utils.renderer_pyrd import Renderer_inp
+from utils.cyclic_scheduler import CyclicLRWithRestarts
+from utils.inference import get_final_preds
 
 def seed_worker(worker_seed=7):
     np.random.seed(worker_seed)
@@ -51,7 +55,7 @@ def init(note='MP', dtype=torch.float32, output='output', **kwargs):
     if not kwargs.get('eval'):
         logger.set_names(['Epoch', 'LR', 'Train Loss', 'Test Loss'])
     else:
-        logger.set_names(['Name', 'ABS-MPJPE', 'MPJPE', 'PA-MPJPE', 'ABS-PCK', 'PCK', 'MPVPE'])
+        logger.set_names(['Name', 'MPJPE', 'PA-MPJPE', 'ABS-PCK', 'PCK', 'MPVPE', 'Accel', ])
 
     # Store the arguments for the current experiment
     conf_fn = os.path.join(out_dir, 'conf.yaml')
@@ -81,7 +85,7 @@ def init(note='MP', dtype=torch.float32, output='output', **kwargs):
     return out_dir, logger, model_smpl, generator, occlusions
 
 class DatasetLoader():
-    def __init__(self, trainset=None, testset=None, smpl_model=None, data_folder='./data', generator=None, occlusions=None, use_mask=False, use_gt=False, poseseg=False, task=None, **kwargs):
+    def __init__(self, trainset=None, testset=None, smpl_model=None, data_folder='./data', generator=None, occlusions=None, use_mask=False, use_gt=False, poseseg=False, task=None, visible_only=False, **kwargs):
         self.data_folder = data_folder
         self.data_folder_2d = kwargs.get('data_folder2D')
         self.trainset = trainset.split(' ')
@@ -91,6 +95,7 @@ class DatasetLoader():
         self.model = smpl_model
         self.generator = generator
         self.task = task
+        self.visible_only = visible_only
 
         self.use_mask = use_mask
         self.use_dis = kwargs.get('use_dis')
@@ -99,7 +104,7 @@ class DatasetLoader():
     def load_evalset(self):
         eval_dataset = []
         for i in range(len(self.testset)):
-            eval_dataset.append(MPeval(False, self.use_mask, self.data_folder, self.model, self.generator, self.occlusions, self.poseseg, self.testset[i], self.use_gt))
+            eval_dataset.append(MP_Eval_Data(False, self.use_mask, self.data_folder, self.model, self.generator, self.occlusions, self.poseseg, self.testset[i]))
         
         return eval_dataset
 
@@ -114,7 +119,8 @@ class DatasetLoader():
         train_dataset = []
         for i in range(len(self.trainset)):
             if self.task == 'poseseg':
-                train_dataset.append(PoseSegData(True, self.data_folder, self.trainset[i], self.model, self.occlusions, self.generator))
+                # train_dataset.append(PoseSegData(True, self.data_folder, self.trainset[i], self.model, self.occlusions, self.generator))
+                train_dataset.append(COCODataset(True, self.data_folder, self.trainset[i], self.model, self.occlusions, self.generator, self.visible_only))
             else:
                 train_dataset.append(MPData(True, self.use_mask, self.data_folder, self.model, self.generator, self.occlusions, self.poseseg, self.trainset[i]))
 
@@ -125,7 +131,8 @@ class DatasetLoader():
         test_dataset = []
         for i in range(len(self.testset)):
             if self.task == 'poseseg':
-                test_dataset.append(PoseSegData(False, self.data_folder, self.testset[i], self.model, self.occlusions, self.generator))
+                # test_dataset.append(PoseSegData(False, self.data_folder, self.testset[i], self.model, self.occlusions, self.generator))
+                test_dataset.append(COCODataset(False, self.data_folder, self.testset[i], self.model, self.occlusions, self.generator, self.visible_only))
             else:
                 test_dataset.append(MPData(False, self.use_mask, self.data_folder, self.model, self.generator, self.occlusions, self.poseseg, self.testset[i]))
 
@@ -139,26 +146,23 @@ class DatasetLoader():
         return dataset
 
 class ModelLoader():
-    def __init__(self, model=None, lr=0.0001, device=torch.device('cpu'), pretrain=False, pretrain_dir='', out_dir='', smpl=None, generator=None, pretrain_poseseg=False, uv_mask=None, test_loss='MPJPE',  **kwargs):
+    def __init__(self, model=None, lr=0.0001, device=torch.device('cpu'), pretrain=False, pretrain_dir='', out_dir='', smpl=None, generator=None, batchsize=32, pretrain_poseseg=False, uv_mask=None, test_loss='MPJPE', **kwargs):
         self.smpl = smpl
         self.generator = generator
+        self.batchsize = batchsize
         self.output = out_dir
-        try:
-            self.render = Renderer()
-        except:
-            self.render = None
             
         self.J_regressor_halpe = np.load('data/J_regressor_halpe.npy')
 
         self.test_loss = test_loss
-        if self.test_loss in ['PCK']:
+        if self.test_loss in ['PCK', 'mAP']:
             self.best_loss = -1
         else:
             self.best_loss = 999999999
 
         self.model_type = model
         exec('from model.' + self.model_type + ' import ' + self.model_type)
-        self.model = eval(self.model_type)(self.generator)
+        self.model = eval(self.model_type)(self.generator, pretrain_poseseg)
         self.device = device
         # if uv_mask:
         self.uv_mask = cv2.imread('./data/MASK.png')
@@ -182,18 +186,6 @@ class ModelLoader():
             self.model.load_state_dict(model_dict)
             print("load pretrain model")
 
-        if pretrain_poseseg:
-            model_dict = self.model.state_dict()
-            premodel_dict = torch.load('data/poseseg_epoch011.pkl').state_dict()
-            premodel_dict = {k: v for k ,v in premodel_dict.items() if k in model_dict}
-            model_dict.update(premodel_dict)
-            self.model.load_state_dict(model_dict)
-            for param in self.model.segnet.parameters():
-                param.requires_grad = False
-            for param in self.model.posenet.parameters():
-                param.requires_grad = False
-            print("load pretrain poseseg")
-
         # Calculate model size
         model_params = 0
         for parameter in self.model.parameters():
@@ -202,14 +194,17 @@ class ModelLoader():
         print('INFO: Model parameter count: %.2fM' % (model_params / 1e6))
 
         self.optimizer = optim.Adam(filter(lambda p:p.requires_grad, self.model.parameters()), lr=lr)
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', factor=0.1, patience=10, verbose=True)
+        self.scheduler = None
+
+    def load_scheduler(self, epoch_size):
+        self.scheduler = CyclicLRWithRestarts(optimizer=self.optimizer, batch_size=self.batchsize, epoch_size=epoch_size, restart_period=10, t_mult=2, policy="cosine", verbose=True)
 
     def save_best_model(self, testing_loss, epoch, task):
         output = os.path.join(self.output, 'trained model')
         if not os.path.exists(output):
             os.makedirs(output)
 
-        if self.test_loss in ['PCK']:
+        if self.test_loss in ['PCK', 'mAP']:
             if self.best_loss < testing_loss and testing_loss != -1:
                 self.best_loss = testing_loss
 
@@ -239,42 +234,161 @@ class ModelLoader():
             torch.save(self.discriminator, model_name)
             print('save discriminator to %s' % model_name)
 
+    def get_max_pred(self, heatmaps):
+        num_joints = heatmaps.shape[0] # heatmap.shape : (17, 64, 48)
+        width = heatmaps.shape[2] # 
+        heatmaps_reshaped = heatmaps.reshape((num_joints, -1)) # reshape to Two-dimensional tensor, -1:H*W
+        idx = np.argmax(heatmaps_reshaped, 1) # index：(max probability) from second dim
+        maxvals = np.max(heatmaps_reshaped, 1) # value: max confidence from second dim
+
+        maxvals = maxvals.reshape((num_joints, 1)) # reshape to two-dimensional tensor by num_joint
+        idx = idx.reshape((num_joints, 1)) # reshape to two-dimensional tensor by num_joint
+
+        preds = np.tile(idx, (1, 2)).astype(np.float32) # create two-dimensional arry (keypoint coordinates) by duplicating idx
+
+        preds[:, 0] = (preds[:, 0]) % width # caculate x coordinate 
+        preds[:, 1] = np.floor((preds[:, 1]) / width) # caculate y coordinate
+
+        # create mask to filters out keypoint predictions with low confidence
+        pred_mask = np.tile(np.greater(maxvals, 0.0), (1, 2)) # compare maxvals with (0.0), > True/ < False and create two-dimensional arry by duplicating the result
+        pred_mask = pred_mask.astype(np.float32) # convert boolean to float
+
+        preds *= pred_mask
+        return preds, maxvals
+
+    def heatmap_to_coord(self, hms, bbox, hms_flip=None, offset=None, scale=None, **kwargs):
+        if hms_flip is not None:
+            hms = (hms + hms_flip) / 2
+        if not isinstance(hms,np.ndarray): # tensor to numpy
+            hms = hms.cpu().data.numpy()
+        coords, maxvals = self.get_max_pred(hms) 
+            
+        hm_h = hms.shape[1]
+        hm_w = hms.shape[2]
+
+        # post-processing: fine-tune the prediction coordinates to the direction of neighboring pixels with higher heatmap values
+        for p in range(coords.shape[0]):
+            hm = hms[p] # joint p's heatmap 
+            px = int(round(float(coords[p][0]))) # coordinate x of joint p 
+            py = int(round(float(coords[p][1]))) # coordinate y of joint p 
+            if 1 < px < hm_w - 1 and 1 < py < hm_h - 1: # check coords are within the valid range
+                diff = np.array((hm[py][px + 1] - hm[py][px - 1], 
+                                hm[py + 1][px] - hm[py - 1][px])) # diff[0]:difference in the x direction diff[1]:difference in the y direction
+                coords[p] += np.sign(diff) * .25 #sign: (+1/0/-1) ，0.25是 scale
+
+
+        coords[:, :2] = coords[:, :2] - offset
+        coords[:, :2] = coords[:, :2] / scale
+        preds = coords
+        return preds, maxvals
+
+
+    def save_coco_results(self, kpt_json, data, pred):
+        c = data['center'].detach().cpu().numpy()
+        s = data['scale1'].detach().cpu().numpy()
+        bboxes = data['bbox'].detach().cpu().numpy()
+
+        preds, maxvals = get_final_preds(pred['preheat'][-2].clone().cpu().numpy(), c, s)
+
+        for i, (keypoints, pose_scores, bbox) in enumerate(zip(preds, maxvals, bboxes)):
+
+            keypoints = np.concatenate((keypoints, pose_scores), axis=1)
+
+            data_json = {}
+            data_json['bbox'] = bbox.tolist()
+            data_json['image_id'] = int(data['img_id'][i])
+            data_json['score'] = float(np.mean(pose_scores) + 1.25 * np.max(pose_scores))
+            data_json['category_id'] = 1
+            data_json['keypoints'] = keypoints.reshape(-1).tolist()
+
+            viz = False
+            if viz:
+                from utils.imutils import draw_keyp
+                img = cv2.imread(data['img_path'][i])
+                img = draw_keyp(img, keypoints, format='coco17')
+                vis_img("img", img)
+            
+            kpt_json.append(data_json)
+
+        return kpt_json
+
+
+        # pred_heatmaps = pred['preheat'][-1].detach().cpu().numpy()
+        # offsets = data['offset'].detach().cpu().numpy()
+        # scales = data['scale'].detach().cpu().numpy()
+        # bboxes = data['bbox'].detach().cpu().numpy()
+
+        # for i, (heatmap, offset, scale, bbox) in enumerate(zip(pred_heatmaps, offsets, scales, bboxes)):
+        #     hm_size = [heatmap.shape[1], heatmap.shape[2]]
+        #     pose_coords, pose_scores = self.heatmap_to_coord(
+        #         heatmap, bbox, hm_shape=hm_size, norm_type=None, hms_flip = None, offset=offset,scale=scale, )
+        #     keypoints = np.concatenate((pose_coords, pose_scores), axis=1)
+            
+        #     data_json = {}
+        #     data_json['bbox'] = bbox.tolist()
+        #     data_json['image_id'] = int(data['img_id'][i])
+        #     data_json['score'] = float(np.mean(pose_scores) + 1.25 * np.max(pose_scores))
+        #     data_json['category_id'] = 1
+        #     data_json['keypoints'] = keypoints.reshape(-1).tolist()
+
+        #     viz = False
+        #     if viz:
+        #         from utils.imutils import draw_keyp
+        #         img = cv2.imread(data['img_path'][i])
+        #         img = draw_keyp(img, keypoints, format='coco17')
+        #         vis_img("img", img)
+            
+        #     kpt_json.append(data_json)
+
+        # return kpt_json
+
     def save_poseseg_results(self, results, iter, batchsize=10):
         output = os.path.join(self.output, 'images')
         if not os.path.exists(output):
             os.makedirs(output)
-        
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
         imgs = results['imgs'].transpose(0, 2, 3, 1)
+        imgs = ((imgs * std) + mean)[...,::-1]
+        input_heats = results['input_heats'].transpose(0, 2, 3, 1)
         pred_heats = results['pred_heats'].transpose(0, 2, 3, 1)
         gt_heats = results['gt_heats'].transpose(0, 2, 3, 1)
-        pred_masks = results['pred_masks'][:,0] * 255
+        pred_masks = results['pred_masks'] * 255
         gt_masks = results['gt_masks'] * 255
 
-        for index, (img, pred_heat, gt_heat, pred_mask, gt_mask) in enumerate(zip(imgs, pred_heats, gt_heats, pred_masks, gt_masks)):
+        for index, (img, input_heat, pred_heat, gt_heat, pred_mask, gt_mask) in enumerate(zip(imgs, input_heats, pred_heats, gt_heats, pred_masks, gt_masks)):
             img = img * 255
+            img_h, img_w = img.shape[:2]
+
+            input_heat = np.max(input_heat, axis=2)
+            input_heat = convert_color(input_heat*255)
+            input_heat = cv2.addWeighted(img.astype(np.uint8), 0.5, input_heat.astype(np.uint8),0.5,0)
+            input_heat = cv2.putText(input_heat, 'input_heat', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
 
             pred_heat = np.max(pred_heat, axis=2)
             pred_heat = convert_color(pred_heat*255)
             pred_heat = cv2.addWeighted(img.astype(np.uint8), 0.5, pred_heat.astype(np.uint8),0.5,0)
-            heatmap_name = "%05d_pred_heatmap.jpg" % (iter * batchsize + index)
-            cv2.imwrite(os.path.join(output, heatmap_name), pred_heat)
+            pred_heat = cv2.putText(pred_heat, 'pred_heat', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
 
+            pred_mask = pred_mask.reshape(img_h, img_w)
             pred_mask = convert_color(pred_mask)
             pred_mask = cv2.addWeighted(img.astype(np.uint8), 0.5, pred_mask.astype(np.uint8),0.5,0)
-            mask_name = "%05d_pred_mask.jpg" % (iter * batchsize + index)
-            cv2.imwrite(os.path.join(output, mask_name), pred_mask)
+            # mask_name = "%05d_pred_mask.jpg" % (iter * batchsize + index)
+            # cv2.imwrite(os.path.join(output, mask_name), pred_mask)
             
             gt_heat = np.max(gt_heat, axis=2)
             gt_heat = convert_color(gt_heat*255)
             gt_heat = cv2.addWeighted(img.astype(np.uint8), 0.5, gt_heat.astype(np.uint8),0.5,0)
-            heatmap_name = "%05d_gt_heatmap.jpg" % (iter * batchsize + index)
-            cv2.imwrite(os.path.join(output, heatmap_name), gt_heat)
+            gt_heat = cv2.putText(gt_heat, 'gt_heat', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
 
-            gt_mask = convert_color(gt_mask[0])
+            gt_mask = gt_mask.reshape(img_h, img_w)
+            gt_mask = convert_color(gt_mask)
             gt_mask = cv2.addWeighted(img.astype(np.uint8), 0.5, gt_mask.astype(np.uint8),0.5,0)
-            mask_name = "%05d_gt_mask.jpg" % (iter * batchsize + index)
-            cv2.imwrite(os.path.join(output, mask_name), gt_mask)
+            # mask_name = "%05d_gt_mask.jpg" % (iter * batchsize + index)
+            # cv2.imwrite(os.path.join(output, mask_name), gt_mask)
 
+            img = np.concatenate((img, input_heat, pred_heat, gt_heat, pred_mask, gt_mask), axis=1)
             img_name = "%05d_img.jpg" % (iter * batchsize + index)
             cv2.imwrite(os.path.join(output, img_name), img)
 
@@ -345,8 +459,14 @@ class ModelLoader():
         object order: 
         """
 
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
         results['gt_meshes'] = self.generator.resample_np(results['uv_gt'])
         results['pred_meshes'] = self.generator.resample_np(results['uv'])
+
+        results['rgb_img'] = results['rgb_img'].transpose(0, 2, 3, 1)
+        results['rgb_img'] = ((results['rgb_img'] * std) + mean)[...,::-1]
 
         heatmaps = results['heatmap'].transpose(0, 2, 3, 1)
         joint2ds = np.zeros((heatmaps.shape[0], heatmaps.shape[-1], 3))
@@ -363,48 +483,87 @@ class ModelLoader():
         output = os.path.join(self.output, 'images')
         if not os.path.exists(output):
             os.makedirs(output)
-        for item in results:
-            opt = results[item]
+
+        for index, (img, heatmap, mask, uv, uv_gt, pred_mesh, gt_mesh) in enumerate(zip(results['rgb_img'], results['heatmap'], results['mask'], results['uv'], results['uv_gt'], results['pred_meshes'], results['gt_meshes'])):
+            img = img * 255
+            img_h, img_w = img.shape[:2]
+
+            heatmap = np.max(heatmap.transpose(1,2,0), axis=2)
+            heatmap = convert_color(heatmap*255)
+            heatmap = cv2.addWeighted(img.astype(np.uint8), 0.5, heatmap.astype(np.uint8),0.5,0)
+            heatmap = cv2.putText(heatmap, 'heatmap', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
+
+            mask = mask.reshape(img_h, img_w)
+            mask = convert_color(mask*255)
+            mask = cv2.addWeighted(img.astype(np.uint8), 0.5, mask.astype(np.uint8),0.5,0)
+            mask = cv2.putText(mask, 'mask', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
+
+
+            uv = uv.transpose(1, 2, 0)  # H*W*C
+            uv = uv * self.uv_mask
+            uv = (uv + 0.5) * 255
+            uv = cv2.putText(uv, 'uv', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
+
+            uv_gt = uv_gt.transpose(1, 2, 0)  # H*W*C
+            uv_gt = uv_gt * self.uv_mask
+            uv_gt = (uv_gt + 0.5) * 255
+            uv_gt = cv2.putText(uv_gt, 'uv_gt', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
+
+            img = np.concatenate((img, heatmap, mask, uv, uv_gt), axis=1)
+
+            self.smpl.write_obj(
+                pred_mesh, os.path.join(output, '%05d_pred_mesh.obj' %(iter * batchsize + index) )
+            )
+
+            self.smpl.write_obj(
+                gt_mesh, os.path.join(output, '%05d_gt_mesh.obj' %(iter * batchsize + index) )
+            )
+
+            img_name = "%05d_img.jpg" % (iter * batchsize + index)
+            cv2.imwrite(os.path.join(output, img_name), img)
+
+        # for item in results:
+        #     opt = results[item]
             
-            for index, img in enumerate(opt):
-                img_name = "%05d_%s.jpg" % (iter * batchsize + index, item)
+        #     for index, img in enumerate(opt):
+        #         img_name = "%05d_%s.jpg" % (iter * batchsize + index, item)
                 
-                # save mesh
-                if item in ['gt_meshes', 'pred_meshes']:
-                    resampled_mesh = img
-                    self.smpl.write_obj(
-                        resampled_mesh, os.path.join(output, '%05d_%s_mesh.obj' %(iter * batchsize + index, item) )
-                    )
-                    joint3ds = np.matmul(self.J_regressor_halpe, resampled_mesh)
+        #         # save mesh
+        #         if item in ['gt_meshes', 'pred_meshes']:
+        #             resampled_mesh = img
+        #             self.smpl.write_obj(
+        #                 resampled_mesh, os.path.join(output, '%05d_%s_mesh.obj' %(iter * batchsize + index, item) )
+        #             )
+        #             joint3ds = np.matmul(self.J_regressor_halpe, resampled_mesh)
 
-                    img_render = results['rgb_img'][index].transpose(1, 2, 0) * 255
-                    joint3d = joint3ds[[5,6,7,8,9,10,11,12,13,14,15,16]]
-                    joint2d = joint2ds[index][[9,8,10,7,11,6,3,2,4,1,5,0]]
-                    rot, trans, intri = est_trans(resampled_mesh, joint3d, joint2d, img_render, focal=1000)
-                    render_out = self.render(resampled_mesh, self.smpl.faces, rot.copy(), trans.copy(), intri.copy(),
-                                             img_render.copy(), color=[1, 1, 0.9])
-                    # self.render.vis_img('render', render_out)
+        #             img_render = results['rgb_img'][index] * 255
+        #             joint3d = joint3ds[:17]
+        #             joint2d = joint2ds[index]
+        #             rot, trans, intri = est_trans(resampled_mesh, joint3d, joint2d, img_render, focal=5000)
+        #             render_out = self.render(resampled_mesh, self.smpl.faces, rot.copy(), trans.copy(), intri.copy(),
+        #                                      img_render.copy(), color=[1, 1, 0.9])
+        #             # self.render.vis_img('render', render_out)
 
-                    render_name = "%05d_%s_render.jpg" % (iter * batchsize + index, item)
-                    cv2.imwrite(os.path.join(output, render_name), render_out)
+        #             render_name = "%05d_%s_render.jpg" % (iter * batchsize + index, item)
+        #             cv2.imwrite(os.path.join(output, render_name), render_out)
 
-                # save img
-                elif item in ['uv', 'uv_gt']:
-                    img = img.transpose(1, 2, 0)  # H*W*C
-                    img = img * self.uv_mask
-                    img = (img + 0.5) * 255
-                    cv2.imwrite(os.path.join(output, img_name), img)
-                elif item == 'heatmap' or item == 'preheat':
-                    img = img.transpose(1, 2, 0)  # H*W*C
-                    merge_heatmap = np.max(img, axis=2)
-                    gtt = convert_color(merge_heatmap*255)
-                    dst_image = results['rgb_img'][index].transpose(1, 2, 0) * 255
-                    img = cv2.addWeighted(gtt,0.5, dst_image.astype(np.uint8),0.5,0)
-                    cv2.imwrite(os.path.join(output, img_name), img)
-                elif item in ['mask']:
-                    img = img.transpose(1, 2, 0)  # H*W*C
-                    img = img * 255
-                    cv2.imwrite(os.path.join(output, img_name), img)
+        #         # save img
+        #         elif item in ['uv', 'uv_gt']:
+        #             img = img.transpose(1, 2, 0)  # H*W*C
+        #             img = img * self.uv_mask
+        #             img = (img + 0.5) * 255
+        #             cv2.imwrite(os.path.join(output, img_name), img)
+        #         elif item == 'heatmap' or item == 'preheat':
+        #             img = img.transpose(1, 2, 0)  # H*W*C
+        #             merge_heatmap = np.max(img, axis=2)
+        #             gtt = convert_color(merge_heatmap*255)
+        #             dst_image = results['rgb_img'][index] * 255
+        #             img = cv2.addWeighted(gtt,0.5, dst_image.astype(np.uint8),0.5,0)
+        #             cv2.imwrite(os.path.join(output, img_name), img)
+        #         elif item in ['mask']:
+        #             img = img.transpose(1, 2, 0)  # H*W*C
+        #             img = img * 255
+        #             cv2.imwrite(os.path.join(output, img_name), img)
                     
     def save_demo_results(self, results, iter, img_path):
         """
@@ -420,18 +579,19 @@ class ModelLoader():
         img = results['img']
 
         joint2ds[:, :, -1] = confidence
-        for index, (joint2d, heatmap, scale, offset) in enumerate(zip(joint2ds, heatmaps, results['scales'], results['offsets'])):
+        for index, (joint2d, heatmap, scale, center) in enumerate(zip(joint2ds, heatmaps, results['scales'], results['centers'])):
             for j in range(heatmap[0].shape[-1]):
                 if joint2d[j][2] < 0.3:
                     continue
                 joint2d[j][:2] = np.mean(np.where(heatmap[:, :, j] == joint2d[j][2]), axis=1)[::-1]
-                joint2d[j][:2] = joint2d[j][:2] - offset
-                joint2d[j][:2] = joint2d[j][:2] / scale
+                joint2d[j][:2] = np.array(trans(joint2d[j][:2], center, scale, (256,256), invert=1))-1
+                # joint2d[j][:2] = joint2d[j][:2] / scale
 
         # for j2ds in joint2ds:
         #     for j2d in j2ds[:,:2].astype(np.int):
         #         img = cv2.circle(img, tuple(j2d), 5, (0,0,255), -1)
         # vis_img('img', img)
+
 
         output = os.path.join(self.output, 'images')
         if not os.path.exists(output):
@@ -443,18 +603,19 @@ class ModelLoader():
             joint3ds = np.matmul(self.J_regressor_halpe, mesh)
 
             img_render = img
-            joint3d = joint3ds[[5,6,7,8,9,10,11,12,13,14,15,16]]
-            joint2d = j2ds[[9,8,10,7,11,6,3,2,4,1,5,0]]
+            joint3d = joint3ds[:17]
+            joint2d = j2ds
             if (joint2d[:,2] > 0).sum() < 2:
                 continue
-            rot, trans, intri = est_trans(mesh, joint3d, joint2d, img_render, focal=1000)
+            rot, transl, intri = est_trans(mesh, joint3d, joint2d, img_render, focal=1000)
 
-            abs_meshes.append(mesh + trans)
+            abs_meshes.append(mesh + transl)
+
 
         render = Renderer_inp(focal_length=1000, img_w=img.shape[1], img_h=img.shape[0], faces=self.smpl.faces)
 
         rendered = render.render_front_view(abs_meshes, img.copy())
-
+        render.delete()
         # vis_img('img', rendered)
 
         render_name = "%s" % (img_path.replace('\\', '_').replace('/', '_'))
@@ -519,7 +680,7 @@ class ModelLoader():
             index += 1
 
 class LossLoader():
-    def __init__(self, smpl, train_loss='L1', test_loss='L1', generator=None, device=torch.device('cpu'), uv_mask=False, batchsize=1, **kwargs):
+    def __init__(self, smpl, train_loss='L1', test_loss='L1', generator=None, device=torch.device('cpu'), uv_mask=False, batchsize=1, visible_only=False, **kwargs):
         self.train_loss_type = train_loss.split(' ')
         self.test_loss_type = test_loss.split(' ')
         self.smpl = smpl
@@ -560,7 +721,7 @@ class LossLoader():
             if loss == 'POSE_L1':            
                 self.train_loss.update(POSE_L1=POSE_L1(self.device))
             if loss == 'POSE_L2':            
-                self.train_loss.update(POSE_L2=POSE_L2(self.device))
+                self.train_loss.update(POSE_L2=POSE_L2(self.device, visible_only))
 
         self.test_loss = {}
         for loss in self.test_loss_type:
@@ -610,7 +771,7 @@ class LossLoader():
             elif ltype == 'MASK_L2':
                 loss_dict.update(MASK_L2=self.train_loss['MASK_L2'](pred['premask'], data['mask'], data['mask_flag']))
             elif ltype == 'POSE_L2':
-                loss_dict.update(POSE_L2=self.train_loss['POSE_L2'](pred['preheat'], data['partialheat'], data['pose_flag']))
+                loss_dict.update(POSE_L2=self.train_loss['POSE_L2'](pred['preheat'], data['gt_heat'], data['pose_flag'], data['vis']))
             else:
                 pass
 

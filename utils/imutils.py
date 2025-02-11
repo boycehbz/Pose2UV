@@ -193,12 +193,9 @@ def drawkp_coco(src_image, pts):
 #     return new_img
 
 
-def get_transform(center, h, w, res, rot=0):
-    """
-    General image processing functions
-    """
-    # Generate transformation matrix
-
+def get_transform(center, scale, res, rot=0):
+    """Generate transformation matrix."""
+    h = 200 * scale
     t = np.zeros((3, 3))
     t[0, 0] = float(res[1]) / h
     t[1, 1] = float(res[0]) / h
@@ -222,24 +219,14 @@ def get_transform(center, h, w, res, rot=0):
         t = np.dot(t_inv,np.dot(rot_mat,np.dot(t_mat,t)))
     return t
 
-def transform(pt, center, img, res, invert=0, rot=0):
-    img = im_to_numpy(img)
-
-    # Preprocessing for efficient cropping
-    h, w = img.shape[0], img.shape[1]
-    # Transform pixel location to different reference
-    t = get_transform(center, h, w, res, rot=rot)
+def transform(pt, center, scale, res, invert=0, rot=0):
+    """Transform pixel location to different reference."""
+    t = get_transform(center, scale, res, rot=rot)
     if invert:
         t = np.linalg.inv(t)
-
-    new_pt = np.zeros((pt.shape))
-    for i in range(pt.shape[0]):
-        new_pt_ = np.array([pt[i, 0] - 1, pt[i, 1] - 1, 1.]).T
-        new_pt_ = np.dot(t, new_pt_)
-        new_pt[i, 0] = int(new_pt_[0])
-        new_pt[i, 1] = int(new_pt_[1])
-
-    return new_pt + 1
+    new_pt = np.array([pt[0]-1, pt[1]-1, 1.]).T
+    new_pt = np.dot(t, new_pt)
+    return new_pt[:2].astype(int)+1
 
 def get_transform_new(center, scale, res, rot=0):
     """Generate transformation matrix."""
@@ -281,9 +268,9 @@ def trans(pt, center, scale, res, invert=0, rot=0):
 def crop(img, center, scale, res, rot=0):
     """Crop image according to the supplied bounding box."""
     # Upper left point
-    ul = np.array(trans([1, 1], center, scale, res, invert=1))-1
+    ul = np.array(transform([1, 1], center, scale, res, invert=1))-1
     # Bottom right point
-    br = np.array(trans([res[0]+1, 
+    br = np.array(transform([res[0]+1, 
                              res[1]+1], center, scale, res, invert=1))-1
     
     # Padding so that when rotated proper amount of context is included
@@ -308,13 +295,11 @@ def crop(img, center, scale, res, rot=0):
 
     if not rot == 0:
         # Remove padding
-        new_img = scipy.misc.imrotate(new_img, rot)
+        new_img = scipy.ndimage.rotate(new_img, rot, reshape=False)
         new_img = new_img[pad:-pad, pad:-pad]
 
-    #new_img = scipy.misc.imresize(new_img, res)
-  
-    new_img = cv2.resize(new_img, (256, 256))
-    return new_img
+    new_img = cv2.resize(new_img, tuple(res), interpolation=cv2.INTER_CUBIC) #scipy.misc.imresize(new_img, res)
+    return new_img, ul, br, new_shape, new_x, new_y, old_x, old_y
 
 def uncrop(img, center, scale, orig_shape, rot=0, is_rgb=True):
     """'Undo' the image cropping/resizing.
@@ -427,8 +412,8 @@ def synthesize_occlusion(img, occlusion, mask, lt_s, rb_s, out_mask):
     # occlusion size
     lt = lt_s.copy()
     rb = rb_s.copy()
-    lt = np.clip(lt, 0, 255)
-    rb = np.clip(rb, 0, 255)
+    lt = np.clip(lt, 0, max(img.shape[:2]))
+    rb = np.clip(rb, 0, max(img.shape[:2]))
 
     human_size = (rb-lt).max()
     oc_size = np.array(occlusion.shape[:2]).max()
@@ -912,8 +897,8 @@ def draw_keyp(img, joints, color=None, format='coco17', thickness=3):
     return img
 
 def vis_img(name, im):
-    ratiox = 300/int(im.shape[0])
-    ratioy = 300/int(im.shape[1])
+    ratiox = 800/int(im.shape[0])
+    ratioy = 800/int(im.shape[1])
     if ratiox < ratioy:
         ratio = ratiox
     else:
@@ -953,7 +938,7 @@ def croppad(image, mask, label, lt, rb, f=255, img_size=256, aug=False, return_t
     else:
         return image, mask, label, offlt, offrb
 
-def croppad_kp(image, mask, input_2d, gt_2d, lt, rb, f=255, img_size=256, aug=False, return_trans=False):
+def croppad_kp(image, mask, input_2d, gt_2d, lt, rb, f=255, img_size=256, aug=False, return_trans=True):
     h, w, c = image.shape
     center = (rb + lt) / 2
     content_size = rb - lt
@@ -976,10 +961,42 @@ def croppad_kp(image, mask, input_2d, gt_2d, lt, rb, f=255, img_size=256, aug=Fa
     input_2d[:, 1] = input_2d[:, 1] + offset[1]
     gt_2d[:, 0] = gt_2d[:, 0] + offset[0]
     gt_2d[:, 1] = gt_2d[:, 1] + offset[1]
+
     if return_trans:
         return image, mask, input_2d, gt_2d, offlt, offrb, offset
     else:
         return image, mask, input_2d, gt_2d, offlt, offrb
+
+def draw_keyp(img, joints, color=None, format='coco17', thickness=3):
+    skeletons = {'coco17':[[0,1],[1,3],[0,2],[2,4],[5,6],[5,7],[7,9],[6,8],[8,10],[5,11],[11,13],[13,15],[6,12],[12,14],    [14,16],[11,12]],
+            'halpe':[[0,1],[1,3],[0,2],[2,4],[5,18],[6,18],[18,17],[5,7],[7,9],[6,8],[8,10],[5,11],[11,13],[13,15],[6,12],[12,14],[14,16],[11,19],[19,12],[18,19],[15,24],[15,20],[20,22],[16,25],[16,21],[21,23]],
+            'MHHI':[[0,1],[1,2],[3,4],[4,5],[0,6],[3,6],[6,13],[13,7],[13,10],[7,8],[8,9],[10,11],[11,12]],
+            'Simple_SMPL':[[0,1],[1,2],[2,6],[6,3],[3,4],[4,5],[6,7],[7,8],[8,9],[8,10],[10,11],[11,12],[8,13],[13,14],[14,15]],
+            'LSP':[[0,1],[1,2],[2,3],[5,4],[4,3],[3,9],[9,8],[8,2],[6,7],[7,8],[9,10],[10,11]],
+            }
+    colors = {'coco17':[(255,0,0), (255,82,0), (255,165,0), (255,210,0), (255,255,0), (127,255,0), (0,127,0), (0,255,0), (0,210,255), (0,127,255), (0,82,127), (0,210,127), (0,0,127), (0,0,255), (139,0,255), (139,0,127)],
+                'halpe':[(255,0,0), (255,82,0), (255,165,0), (255,210,0), (255,255,0), (127,255,0), (0,127,0), (0,255,0), (0,210,255), (0,127,255), (0,82,127), (0,210,127), (0,0,127), (0,0,255), (139,0,255), (139,0,127), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), (255,0,0), ],
+                'MHHI':[(255,0,0), (255,82,0), (255,165,0), (255,210,0), (255,255,0), (127,255,0), (0,127,0), (0,255,0), (0,210,255), (0,127,255), (0,82,127), (0,210,127), (0,0,127)],
+                'Simple_SMPL':[(255,0,0), (255,82,0), (255,165,0), (255,210,0), (255,255,0), (127,255,0), (0,127,0), (0,255,0), (0,210,255), (0,127,255), (0,82,127), (0,210,127), (0,0,127), (0,0,127), (0,0,127), (0,0,127), (0,0,127), (0,0,127), (0,0,127), (0,0,127), (0,0,127)],
+                'LSP':[(255,0,0), (255,82,0), (255,165,0), (255,210,0), (255,255,0), (127,255,0), (0,127,0), (0,255,0), (0,210,255), (0,127,255), (0,82,127), (0,210,127)]}
+
+    if joints.shape[1] == 3:
+        confidence = joints[:,2]
+    else:
+        confidence = np.ones((joints.shape[0], 1))
+    joints = joints[:,:2].astype(np.int32)
+    for bone, c in zip(skeletons[format], colors[format]):
+        if color is not None:
+            c = color
+        # c = (0,255,255)
+        if confidence[bone[0]] > 0.1 and confidence[bone[1]] > 0.1:
+            # pass
+            img = cv2.line(img, tuple(joints[bone[0]]), tuple(joints[bone[1]]), c, thickness=int(thickness))
+    
+    for p in joints:
+        img = cv2.circle(img, tuple(p), int(thickness * 5/3), c, -1)
+        # vis_img('img', img)
+    return img
 
 def crop_target_person(rgb_img, mask, lt, rb, kp_2d):
     # size: 1.3 times of bbox
@@ -1383,3 +1400,26 @@ def est_trans(mesh, J3d, J2d, image, focal=5000.):
     init_extri[:3,3] = gt_cam_t
     # mesh_proj = surface_project(mesh, init_extri, wp_cam_intri)
     return init_extri[:3,:3], gt_cam_t, wp_cam_intri
+
+def expand_to_aspect_ratio(input_shape, target_aspect_ratio=None):
+    """Increase the size of the bounding box to match the target shape."""
+    if target_aspect_ratio is None:
+        return input_shape
+
+    try:
+        w , h = input_shape
+    except (ValueError, TypeError):
+        return input_shape
+
+    w_t, h_t = target_aspect_ratio
+    if h / w < h_t / w_t:
+        h_new = max(w * h_t / w_t, h)
+        w_new = w
+    else:
+        h_new = h
+        w_new = max(h * w_t / h_t, w)
+    if h_new < h or w_new < w:
+        breakpoint()
+    return np.array([w_new, h_new])
+
+

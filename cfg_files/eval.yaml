@@ -1,5 +1,5 @@
 # experiment name
-note: eval_ablation-VCLMP-ours-wo-vae_epoch017
+note: eval
 #project basic
 task: segnet_uv_vae #cat_mask/cat_heat/poseseg_uv
 eval: True
@@ -7,7 +7,7 @@ eval: True
 #model basic
 use_mask: True
 uv_mask: True # use mask when calculate UV loss
-worker: 16
+worker: 8
 virtual_mask: False
 poseseg: False
 
@@ -17,17 +17,17 @@ use_disc: False
 mesh_disc: False
 
 #dataset
-testset: VCLMP #VCLMP h36m_valid_protocol1 h36m_valid_protocol2 MPI3DPW Panoptic_haggling1 Panoptic_mafia2 Panoptic_pizza1 Panoptic_ultimatum1 Panoptic_Eval MuPoTS_origin
+testset: Human36M_MOSH #VCLMP h36m_valid_protocol1 h36m_valid_protocol2 MPI3DPW Panoptic_haggling1 Panoptic_mafia2 Panoptic_pizza1 Panoptic_ultimatum1 Panoptic_Eval MuPoTS_origin
 
-data_folder: E:\Human-evaluation-v1.0
-model: segnet_uv
+data_folder: G:\Human-Training-v3.12
+model: pose2uv_res50
 batchsize: 10
 mode: train # test
 gpu_index: 0
 
 # pretrain
 pretrain: True
-pretrain_dir: pretrain_model\ablation-VCLMP-ours-wo-vae_epoch017.pkl
+pretrain_dir: pretrain_model\best_segnet_uv_vae_epoch036_46.359337.pkl
 
 #visualize
 viz: False

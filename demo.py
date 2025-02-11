@@ -5,7 +5,6 @@
  @Email       : buzhenhuang@outlook.com
  @Description : 
 '''
-
 import torch
 from cmd_parser import parse_config
 from modules import init, DatasetLoader, ModelLoader
@@ -13,8 +12,8 @@ from yolox.yolox import Predictor
 from alphapose_module.alphapose_core import AlphaPose_Predictor
 
 ###########Load config file in debug mode#########
-# import sys
-# sys.argv = ['','--config=cfg_files/demo.yaml']
+import sys
+sys.argv = ['','--config=cfg_files/demo.yaml']
 
 def main(**args):
     # Global setting

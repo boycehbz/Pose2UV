@@ -30,7 +30,7 @@ class maskBasicBlock(nn.Module):
 class segnet(nn.Module):
     def __init__(self, in_channel=3):
         super(segnet, self).__init__()
-
+        self.num_joints = 17
         self.conv0_0 = nn.Conv2d(in_channels=in_channel, out_channels=21, kernel_size=3, stride=2, padding=1, dilation=1)
         self.conv0_1 = nn.Conv2d(in_channels=in_channel, out_channels=21, kernel_size=3, stride=2, padding=2, dilation=2)
         self.conv0_2 = nn.Conv2d(in_channels=in_channel, out_channels=21, kernel_size=3, stride=2, padding=5, dilation=5)
@@ -40,9 +40,9 @@ class segnet(nn.Module):
         self.block3 = nn.Sequential(maskBasicBlock(256, 512, True), maskBasicBlock(512, 512))
         self.block4 = nn.Sequential(maskBasicBlock(512, 256), maskBasicBlock(256, 64))
 
-        self.block5 = nn.Sequential(maskBasicBlock(526, 256),maskBasicBlock(256, 64))
-        self.block6 = nn.Sequential(maskBasicBlock(270, 256),maskBasicBlock(256, 64))
-        self.block7 = nn.Sequential(maskBasicBlock(142, 128),maskBasicBlock(128, 64))
+        self.block5 = nn.Sequential(maskBasicBlock(512 + self.num_joints + 1, 256),maskBasicBlock(256, 64))
+        self.block6 = nn.Sequential(maskBasicBlock(256 + self.num_joints + 1, 256),maskBasicBlock(256, 64))
+        self.block7 = nn.Sequential(maskBasicBlock(128 + self.num_joints + 1, 128),maskBasicBlock(128, 64))
     
         self.conv = nn.Conv2d(in_channels=64, out_channels=1, kernel_size=1)
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')

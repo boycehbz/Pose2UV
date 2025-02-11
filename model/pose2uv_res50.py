@@ -8,8 +8,7 @@ import torch.nn as nn
 import numpy as np
 
 from model.resnet import ResNet
-from model.posenet import posenet
-from model.segnet import segnet
+from model.poseseg import poseseg
 
 # Specification
 resnet_spec = {
@@ -77,28 +76,36 @@ class DeconvHead(nn.Module):
         return x
 
 class Res_catconv(nn.Module):
-    def __init__(self, backbone, head, generator):
+    def __init__(self, backbone, head, generator, pretrain_poseseg = True):
         super(Res_catconv, self).__init__()
         self.generator = generator
         self.J_regressor_halpe = torch.from_numpy(np.load('data/J_regressor_halpe.npy')).cuda()
 
-        self.segnet = segnet()
-        self.posenet = posenet()
+        self.poseseg = poseseg()
         self.backbone = backbone
         self.head = head
-        self.conv3 = nn.Conv2d(in_channels=17, out_channels=17, kernel_size=3, stride=1, padding=1, dilation=1)
-        self.conv4 = nn.Conv2d(in_channels=17, out_channels=17, kernel_size=1, stride=1, padding=0, dilation=1)
+        self.conv3 = nn.Conv2d(in_channels=21, out_channels=21, kernel_size=3, stride=1, padding=1, dilation=1)
+        self.conv4 = nn.Conv2d(in_channels=21, out_channels=21, kernel_size=1, stride=1, padding=0, dilation=1)
+
+        if pretrain_poseseg:
+            model_path = 'pretrain_model/best_viskep_mask_epoch033_0.777255.pkl'
+            model_dict = self.state_dict()
+            premodel_dict = torch.load(model_path)['model']
+            premodel_dict = {'poseseg.' + k: v for k ,v in premodel_dict.items() if 'poseseg.' + k in model_dict}
+            model_dict.update(premodel_dict)
+            self.load_state_dict(model_dict)
+            for param in self.poseseg.parameters():
+                param.requires_grad = False
+            print("load pretrain poseseg from %s for %d layers"  %(model_path, len(premodel_dict)))
 
     def forward(self, data):
         
         img = data['img']
-        fullheat = data['fullheat']
 
-        pred = {}
-        partialheat = self.posenet(img, fullheat[0])
-        pre_mask = self.segnet(img, partialheat)
-        mask = pre_mask[4]
-        heat = partialheat[4]
+        pred = self.poseseg(data)
+
+        mask = pred['premask'][-1]
+        heat = pred['preheat'][-1]
         uv_inp = torch.cat([img, heat, mask], 1)
         uv_inp = self.conv3(uv_inp)
         uv_inp = self.conv4(uv_inp)
@@ -110,10 +117,10 @@ class Res_catconv(nn.Module):
 
         pred['latent'] = latent
         pred['pred_uv'] = uv
-        pred['mask'] = mask
-        pred['heatmap'] = heat
-        pred['pred_mask'] = pre_mask
-        pred['pred_heat'] = partialheat
+        # pred['mask'] = mask
+        # pred['heatmap'] = heat
+        # pred['pred_mask'] = mask
+        # pred['pred_heat'] = heat
         pred['pred_verts'] = pred_verts
         pred['pred_joints'] = pred_joints
 
@@ -134,7 +141,7 @@ def get_default_network_config():
     return config
 
 # create network
-def pose2uv_res50(generator, resnet_layers = 50):
+def pose2uv_res50(generator, pretrain_poseseg=True, resnet_layers = 50):
     cfg = get_default_network_config()
     layers, channels, _ = resnet_spec[resnet_layers]
     backbone_net = ResNet(layers)
@@ -143,5 +150,5 @@ def pose2uv_res50(generator, resnet_layers = 50):
         cfg.num_deconv_filters, cfg.num_deconv_kernel,
         cfg.final_conv_kernel, 3, cfg.depth_dim
     )
-    UV_net = Res_catconv(backbone_net, head_net, generator)
+    UV_net = Res_catconv(backbone_net, head_net, generator, pretrain_poseseg=pretrain_poseseg)
     return UV_net

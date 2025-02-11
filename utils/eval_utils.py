@@ -2,39 +2,112 @@ import torch
 import torch.nn as nn
 import numpy as np
 import cv2
-from pycocotools import mask as maskUtils
-from utils.imutils import vis_img
+import os
+from utils.smpl_torch_batch import SMPLModel
+from tqdm import tqdm
+# from sdf import SDFLoss
+
+def rearrange2seq(pred_poses, pred_shapes, gt_poses, gt_shapes, gt_joints, valids, file_names, is_seq=True):
+    gt_ps, gt_ss, pred_ps, pred_ss, preds, vals = [], [], [], [], [], []
+    name_last = None
+    gt_p, gt_s, pred_p, pred_s, pred, val = [], [], [], [], [], []
+    for name, pred_pose, pred_shape, gt_pose, gt_shape, gt_joint, valid in zip(file_names, pred_poses, pred_shapes, gt_poses, gt_shapes, gt_joints, valids):
+        name = os.path.dirname(name)
+        if name != name_last and is_seq:
+            if name_last is not None:
+                gt_ps.append(np.array(gt_p))
+                gt_ss.append(np.array(gt_s))
+                pred_ps.append(np.array(pred_p))
+                pred_ss.append(np.array(pred_s))
+                preds.append(np.array(pred))
+                vals.append(np.array(val))
+            name_last = name
+            gt_p, gt_s, pred_p, pred_s, pred, val = [], [], [], [], [], []
+        elif len(gt_p) >= 2000 and not is_seq:
+            gt_ps.append(np.array(gt_p))
+            gt_ss.append(np.array(gt_s))
+            pred_ps.append(np.array(pred_p))
+            pred_ss.append(np.array(pred_s))
+            preds.append(np.array(pred))
+            vals.append(np.array(val))
+            gt_p, gt_s, pred_p, pred_s, pred, val = [], [], [], [], [], []
+        gt_p.append(gt_pose)
+        gt_s.append(gt_shape)
+        pred_p.append(pred_pose)
+        pred_s.append(pred_shape)
+        pred.append(gt_joint)
+        val.append(valid)
+    gt_ps.append(np.array(gt_p))
+    gt_ss.append(np.array(gt_s))
+    pred_ps.append(np.array(pred_p))
+    pred_ss.append(np.array(pred_s))
+    preds.append(np.array(pred))
+    vals.append(np.array(val))
+    return gt_ps, gt_ss, pred_ps, pred_ss, preds, vals
 
 class HumanEval(nn.Module):
-    def __init__(self, name, generator=None, smpl=None, dtype=torch.float32, **kwargs):
+    def __init__(self, name, generator=None, dtype=torch.float32, **kwargs):
         super(HumanEval, self).__init__()
         self.generator = generator
-        self.smpl = smpl
+
+        self.neutral_smpl = SMPLModel(model_path='data/SMPL_NEUTRAL.pkl', data_type=dtype)
+        self.male_smpl = SMPLModel(model_path='data/SMPL_MALE.pkl', data_type=dtype)
+        self.female_smpl = SMPLModel(model_path='data/SMPL_FEMALE.pkl', data_type=dtype)
+
         self.dtype = dtype
+
+        # self.sdf_loss = SDFLoss(self.neutral_smpl.faces, self.neutral_smpl.faces, robustifier=None).cuda()
+
         self.name = name
-        self.dataset_scale = self.dataset_mapping(self.name)
         self.J_regressor_H36 = np.load('data/J_regressor_h36m.npy').astype(np.float32)
-        self.J_regressor_LSP = self.smpl.joint_regressor.clone().transpose(1,0).detach().numpy()
-        self.J_regressor_SMPL = self.smpl.J_regressor.clone().detach().numpy()
+        self.J_regressor_LSP = np.load('data/J_regressor_lsp.npy').astype(np.float32)
+        self.J_regressor_halpe = np.load('data/J_regressor_halpe.npy').astype(np.float32)
+        self.J_regressor_SMPL = self.neutral_smpl.J_regressor.clone().cpu().detach().numpy()
+        self.halpe2lsp = [16, 14, 12, 11, 13, 15, 10, 8, 6, 5, 7, 9, 18, 17]
 
         self.eval_handler_mapper = dict(
+            Hi4D=self.LSPEvalHandler,
+            VCL3DMPB=self.LSPEvalHandler,
+            OcMotion=self.LSPEvalHandler,
+            Human36M_MOSH=self.LSPEvalHandler,
+            VCL_3DOH50K=self.LSPEvalHandler,
             VCLMP=self.LSPEvalHandler,
+            h36m_synthetic_protocol2=self.LSPEvalHandler,
             h36m_valid_protocol1=self.LSPEvalHandler,
             h36m_valid_protocol2=self.LSPEvalHandler,
-            MPI3DPW=self.SMPLEvalHandler,
+            MPI3DPW=self.LSPEvalHandler,
+            MPI3DPW_singleperson=self.LSPEvalHandler,
+            MPI3DPWOC=self.LSPEvalHandler,
             Panoptic_haggling1=self.PanopticEvalHandler,
             Panoptic_mafia2=self.PanopticEvalHandler,
             Panoptic_pizza1=self.PanopticEvalHandler,
             Panoptic_ultimatum1=self.PanopticEvalHandler,
             Panoptic_Eval=self.PanopticEvalHandler,
             MuPoTS_origin=self.MuPoTSEvalHandler,
+            MuPoTS=self.MuPoTSEvalHandler,
+            MPI3DHP=self.MuPoTSEvalHandler,
         )
 
-    def dataset_mapping(self, name):
-        if name == 'VCLMP':
-            return 105
-        else:
-            return 1
+        self.init_lists()
+
+    def init_lists(self):
+        self.vertex_error, self.error, self.error_pa, self.abs_pck, self.pck, self.accel = [], [], [], [], [], []
+        self.inter_loss = []
+        self.A_PD =[]
+        self.joint_error_pa =[]
+
+    def report(self):
+        vertex_error = np.mean(np.array(self.vertex_error))
+        error = np.mean(np.array(self.error))
+        error_pa = np.mean(np.array(self.error_pa))
+        abs_pck = np.mean(np.array(self.abs_pck))
+        pck = np.mean(np.array(self.pck))
+        accel = np.mean(np.array(self.accel))
+        interaction = np.mean(np.array(self.inter_loss))
+        joint_error_pa = np.mean(np.array(self.joint_error_pa))
+        A_PD = np.mean(np.array(self.A_PD))
+        print("Surface: %f, MPJPE: %f, PA-MPJPE: %f, Accel: %f, Inter: %f, A-PD: %f, J-PA-MPJPE: %f" %(vertex_error, error, error_pa, accel, interaction, A_PD, joint_error_pa))
+        return vertex_error, error, error_pa, abs_pck, pck, accel
 
     def estimate_translation_from_intri(self, S, joints_2d, joints_conf, fx=5000., fy=5000., cx=128., cy=128.):
         num_joints = S.shape[0]
@@ -142,6 +215,27 @@ class HumanEval(nn.Module):
 
         return S1_hat
 
+    def align_by_pelvis_batch(self, joints, get_pelvis=False, format='lsp'):
+        """
+        Assumes joints is 14 x 3 in LSP order.
+        Then hips are: [3, 2]
+        Takes mid point of these points, then subtracts it.
+        """
+        if format == 'lsp':
+            left_id = 3
+            right_id = 2
+
+            pelvis = (joints[:,left_id, :] + joints[:,right_id, :]) / 2.
+        elif format in ['smpl', 'h36m']:
+            pelvis_id = 0
+            pelvis = joints[:,pelvis_id, :]
+        elif format in ['mpi']:
+            pelvis_id = 14
+            pelvis = joints[:,pelvis_id, :]
+        if get_pelvis:
+            return joints - np.expand_dims(pelvis, axis=1), pelvis
+        else:
+            return joints - np.expand_dims(pelvis, axis=1)
 
     def align_by_pelvis(self, joints, get_pelvis=False, format='lsp'):
         """
@@ -165,7 +259,7 @@ class HumanEval(nn.Module):
         else:
             return joints - np.expand_dims(pelvis, axis=0)
 
-    def align_mesh_by_pelvis(self, mesh, joints, get_pelvis=False, format='lsp'):
+    def align_mesh_by_pelvis_batch(self, mesh, joints, get_pelvis=False, format='lsp'):
         """
         Assumes joints is 14 x 3 in LSP order.
         Then hips are: [3, 2]
@@ -174,84 +268,181 @@ class HumanEval(nn.Module):
         if format == 'lsp':
             left_id = 3
             right_id = 2
-            pelvis = (joints[left_id, :] + joints[right_id, :]) / 2.
+            pelvis = (joints[:,left_id, :] + joints[:,right_id, :]) / 2.
         elif format in ['smpl', 'h36m']:
             pelvis_id = 0
-            pelvis = joints[pelvis_id, :]
+            pelvis = joints[:,pelvis_id, :]
         elif format in ['mpi']:
             pelvis_id = 14
-            pelvis = joints[pelvis_id, :]
+            pelvis = joints[:,pelvis_id, :]
         if get_pelvis:
-            return mesh - np.expand_dims(pelvis, axis=0), pelvis
+            return mesh - np.expand_dims(pelvis, axis=1), pelvis
         else:
-            return mesh - np.expand_dims(pelvis, axis=0)
+            return mesh - np.expand_dims(pelvis, axis=1)
 
-    def compute_errors(self, gt3ds, preds, format='lsp', confs=None):
-        """
-        Gets MPJPE after pelvis alignment + MPJPE after Procrustes.
-        Evaluates on the 14 common joints.
-        Inputs:
-        - gt3ds: N x 14 x 3
-        - preds: N x 14 x 3
-        """
+    def batch_compute_similarity_transform(self, S1, S2):
+        '''
+        Computes a similarity transform (sR, t) that takes
+        a set of 3D points S1 (3 x N) closest to a set of 3D points S2,
+        where R is an 3x3 rotation matrix, t 3x1 translation, s scale.
+        i.e. solves the orthogonal Procrutes problem.
+        '''
+        S1 = torch.from_numpy(S1).float()
+        S2 = torch.from_numpy(S2).float()
+        transposed = False
+        if S1.shape[0] != 3 and S1.shape[0] != 2:
+            S1 = S1.permute(0,2,1)
+            S2 = S2.permute(0,2,1)
+            transposed = True
+        assert(S2.shape[1] == S1.shape[1])
+
+        # 1. Remove mean.
+        mu1 = S1.mean(axis=-1, keepdims=True)
+        mu2 = S2.mean(axis=-1, keepdims=True)
+
+        X1 = S1 - mu1
+        X2 = S2 - mu2
+
+        # 2. Compute variance of X1 used for scale.
+        var1 = torch.sum(X1**2, dim=1).sum(dim=1)
+
+        # 3. The outer product of X1 and X2.
+        K = X1.bmm(X2.permute(0,2,1))
+
+        # 4. Solution that Maximizes trace(R'K) is R=U*V', where U, V are
+        # singular vectors of K.
+        U, s, V = torch.svd(K)
+
+        # Construct Z that fixes the orientation of R to get det(R)=1.
+        Z = torch.eye(U.shape[1], device=S1.device).unsqueeze(0)
+        Z = Z.repeat(U.shape[0],1,1)
+        Z[:,-1, -1] *= torch.sign(torch.det(U.bmm(V.permute(0,2,1))))
+
+        # Construct R.
+        R = V.bmm(Z.bmm(U.permute(0,2,1)))
+
+        # 5. Recover scale.
+        scale = torch.cat([torch.trace(x).unsqueeze(0) for x in R.bmm(K)]) / var1
+
+        # 6. Recover translation.
+        t = mu2 - (scale.unsqueeze(-1).unsqueeze(-1) * (R.bmm(mu1)))
+
+        # 7. Error:
+        S1_hat = scale.unsqueeze(-1).unsqueeze(-1) * R.bmm(S1) + t
+
+        if transposed:
+            S1_hat = S1_hat.permute(0,2,1)
+
+        return S1_hat.numpy()
+
+    def compute_errors(self, gt3ds, preds, valids, format='lsp', confs=None):
         if confs is None:
             confs = np.ones((gt3ds.shape[:2]))
-        abs_errors, errors, errors_pa, abs_pck, pck = [], [], [], [], []
-        for i, (gt3d, pred, conf) in enumerate(zip(gt3ds, preds, confs)):
-            gt3d = gt3d.reshape(-1, 3)
 
-            # Get abs error.
-            joint_error = np.sqrt(np.sum((gt3d - pred)**2, axis=1)) * conf
-            abs_errors.append(np.mean(joint_error))
+        abs_errors = (np.mean(np.sqrt(np.sum((gt3ds - preds) ** 2, axis=-1) * confs), axis=-1) * valids).tolist()
 
-            # Get abs pck.
-            abs_pck.append(np.mean(joint_error < 150) * 100)
+        joint_error = np.sqrt(np.sum((gt3ds - preds) ** 2, axis=-1) * confs) * valids[:,np.newaxis]
+        abs_pck = np.mean(joint_error < 150, axis=1).tolist()
 
-            # Root align.
-            gt3d = self.align_by_pelvis(gt3d, format=format)
-            pred3d = self.align_by_pelvis(pred, format=format)
+        gt3ds = self.align_by_pelvis_batch(gt3ds, format=format)
+        preds = self.align_by_pelvis_batch(preds, format=format)
 
-            joint_error = np.sqrt(np.sum((gt3d - pred3d)**2, axis=1)) * conf
-            errors.append(np.mean(joint_error))
+        errors = (np.mean(np.sqrt(np.sum((gt3ds - preds) ** 2, axis=-1) * confs), axis=-1) * valids).tolist()
 
-            # Get pck
-            pck.append(np.mean(joint_error < 150) * 100)
+        joint_error = np.sqrt(np.sum((gt3ds - preds) ** 2, axis=-1) * confs) * valids[:,np.newaxis]
+        pck = np.mean(joint_error < 150, axis=1).tolist()
 
-            # Get PA error.
-            pred3d_sym = self.compute_similarity_transform(pred3d, gt3d)
-            pa_error = np.sqrt(np.sum((gt3d - pred3d_sym)**2, axis=1)) * conf
-            errors_pa.append(np.mean(pa_error))
+        accel_err = np.zeros((len(gt3ds,)))
+        accel_err[1:-1] = self.compute_error_accel(joints_pred=preds, joints_gt=gt3ds)
+        accel = (accel_err * valids).tolist()
 
-        return abs_errors, errors, errors_pa, abs_pck, pck
+        preds_sym = self.batch_compute_similarity_transform(preds, gt3ds)
+        errors_pa = (np.mean(np.sqrt(np.sum((gt3ds - preds_sym) ** 2, axis=-1) * confs), axis=-1) * valids).tolist()
 
-    def LSPEvalHandler(self, premesh, gt_joint):
-        joints = np.matmul(self.J_regressor_LSP, premesh)
+        # abs_errors, errors, errors_pa, abs_pck, pck, gt_joints, pred_joints = [], [], [], [], [], [], []
+        # for i, (gt3d, pred, conf) in enumerate(zip(gt3ds, preds, confs)):
+        #     gt3d = gt3d.reshape(-1, 3)
 
-        gt_joint = gt_joint / self.dataset_scale * 1000
-        joints = joints / self.dataset_scale * 1000
-        abs_error, error, error_pa, abs_pck, pck = self.compute_errors(gt_joint, joints, format='lsp')
-        return abs_error, error, error_pa, abs_pck, pck
+        #     # Get abs error.
+        #     joint_error = np.sqrt(np.sum((gt3d - pred)**2, axis=1)) * conf
+        #     abs_errors.append(np.mean(joint_error))
 
-    def SMPLMeshEvalHandler(self, premeshes, gt_meshes):
-        premeshes = premeshes * 1000
-        gt_meshes = gt_meshes * 1000
+        #     # Get abs pck.
+        #     abs_pck.append(np.mean(joint_error < 150) * 100)
 
-        joints = np.matmul(self.J_regressor_LSP, premeshes)
-        gt_joints = np.matmul(self.J_regressor_LSP, gt_meshes)
+        #     # Root align.
+        #     gt3d = self.align_by_pelvis(gt3d, format=format)
+        #     pred3d = self.align_by_pelvis(pred, format=format)
 
-        vertex_errors = []
+        #     gt_joints.append(gt3d)
+        #     pred_joints.append(pred3d)
 
-        for i, (premesh, gt_mesh, joint, gt_joint) in enumerate(zip(premeshes, gt_meshes, joints, gt_joints)):
-            # Root align.
-            premesh = self.align_mesh_by_pelvis(premesh, joint, format='lsp')
-            gt_mesh = self.align_mesh_by_pelvis(gt_mesh, gt_joint, format='lsp')
+        #     joint_error = np.sqrt(np.sum((gt3d - pred3d)**2, axis=1)) * conf
+        #     errors.append(np.mean(joint_error))
 
-            vertex_error = np.sqrt(np.sum((premesh - gt_mesh)**2, axis=1))
-            vertex_errors.append(np.mean(vertex_error))
+        #     # Get pck
+        #     pck.append(np.mean(joint_error < 150) * 100)
 
-        return vertex_errors
+        #     # Get PA error.
+        #     pred3d_sym = self.compute_similarity_transform(pred3d, gt3d)
+        #     pa_error = np.sqrt(np.sum((gt3d - pred3d_sym)**2, axis=1)) * conf
+        #     errors_pa.append(np.mean(pa_error))
 
-    def PanopticEvalHandler(self, premesh, gt_joint):
+        # accel = self.compute_error_accel(np.array(gt_joints), np.array(pred_joints)).tolist()
+
+        return abs_errors, errors, errors_pa, abs_pck, pck, accel
+
+
+    def compute_error_accel(self, joints_gt, joints_pred, vis=None):
+        """
+        Computes acceleration error:
+            1/(n-2) \sum_{i=1}^{n-1} X_{i-1} - 2X_i + X_{i+1}
+        Note that for each frame that is not visible, three entries in the
+        acceleration error should be zero'd out.
+        Args:
+            joints_gt (Nx14x3).
+            joints_pred (Nx14x3).
+            vis (N).
+        Returns:
+            error_accel (N-2).
+        """
+        # (N-2)x14x3
+        accel_gt = joints_gt[:-2] - 2 * joints_gt[1:-1] + joints_gt[2:]
+        accel_pred = joints_pred[:-2] - 2 * joints_pred[1:-1] + joints_pred[2:]
+
+        normed = np.linalg.norm(accel_pred - accel_gt, axis=2)
+
+        if vis is None:
+            new_vis = np.ones(len(normed), dtype=bool)
+        else:
+            invis = np.logical_not(vis)
+            invis1 = np.roll(invis, -1)
+            invis2 = np.roll(invis, -2)
+            new_invis = np.logical_or(invis, np.logical_or(invis1, invis2))[:-2]
+            new_vis = np.logical_not(new_invis)
+
+        return np.mean(normed[new_vis], axis=1)
+
+    def LSPEvalHandler(self, premesh, gt_joint, valids, is_joint=False):
+        if is_joint:
+            if premesh.shape[-1] == 3:
+                joints = premesh
+                conf = None
+            elif premesh.shape[-1] == 4:
+                joints = premesh[:,:,:3]
+                conf = premesh[:,:,-1]
+        else:
+            joints = np.matmul(self.J_regressor_halpe, premesh)[:,self.halpe2lsp]
+            conf = None
+
+        joints = joints * 1000
+        gt_joint = gt_joint * 1000
+
+        abs_error, error, error_pa, abs_pck, pck, accel = self.compute_errors(gt_joint, joints, valids, confs=conf, format='lsp')
+
+        return abs_error, error, error_pa, abs_pck, pck, accel
+
+    def PanopticEvalHandler(self, premesh, gt_joint, is_joint=False):
         joints = np.matmul(self.J_regressor_H36, premesh)
         conf = gt_joint[:,:,-1].copy()
         gt_joint = gt_joint[:,:,:3]
@@ -260,168 +451,213 @@ class HumanEval(nn.Module):
         abs_error, error, error_pa, abs_pck, pck = self.compute_errors(gt_joint, joints, format='h36m', confs=conf)
         return abs_error, error, error_pa, abs_pck, pck
 
-    def MuPoTSEvalHandler(self, premesh, gt_joint):
+    def MuPoTSEvalHandler(self, premesh, gt_joint, valids,is_joint=False):
         h36m_to_MPI = [10, 8, 14, 15, 16, 11, 12, 13, 4, 5, 6, 1, 2, 3, 0, 7, 9]
         joints = np.matmul(self.J_regressor_H36, premesh)
         # gt_joint = gt_joint / self.dataset_scale * 1000
         joints = joints / self.dataset_scale * 1000
         joints = joints[:,h36m_to_MPI]
-        abs_error, error, error_pa, abs_pck, pck = self.compute_errors(gt_joint, joints, format='mpi')
+        abs_error, error, error_pa, abs_pck, pck, accel = self.compute_errors(gt_joint, joints, valids, format='mpi')
 
-        return abs_error, error, error_pa, abs_pck, pck, joints
+        if self.name == 'MPI3DHP':
+            return abs_error, error, error_pa, abs_pck, pck
+        elif self.name == 'MuPoTS':
+            return abs_error, error, error_pa, abs_pck, pck, accel
+        else:
+            return abs_error, error, error_pa, abs_pck, pck, joints
 
-    def SMPLEvalHandler(self, premesh, gt_joint):
-        joints = np.matmul(self.J_regressor_SMPL, premesh)
+    def SMPLEvalHandler(self, premesh, gt_joint, is_joint=False):
+        if is_joint:
+            if premesh.shape[-1] == 3:
+                joints = premesh
+                conf = None
+            elif premesh.shape[-1] == 4:
+                joints = premesh[:,:,:3]
+                conf = premesh[:,:,-1]
+        else:
+            joints = np.matmul(self.J_regressor_SMPL, premesh)
+            conf = None
 
         gt_joint = gt_joint / self.dataset_scale * 1000
         joints = joints / self.dataset_scale * 1000
-        abs_error, error, error_pa, abs_pck, pck = self.compute_errors(gt_joint, joints, format='smpl')
-        return abs_error, error, error_pa, abs_pck, pck
+        abs_error, error, error_pa, abs_pck, pck, accel = self.compute_errors(gt_joint, joints, confs=conf, format='smpl')
+        return abs_error, error, error_pa, abs_pck, pck, accel
 
-    def forward(self, output, data):
-        results = {}
-        # data processing
-        intris = data['intri'].to(self.dtype).detach().cpu().numpy()
-        gt_joint = data['gt_3d'].to(self.dtype).detach().cpu().numpy()
-        transs = data['trans'].to(self.dtype).cpu().numpy()
-        scales = data['scale'].cpu().numpy()
+    def SMPLMeshEvalHandler(self, premeshes, gt_meshes, valids, is_joint=False):
+        premeshes = premeshes * 1000
+        gt_meshes = gt_meshes * 1000
 
-        # get predicted 2D joints
-        heatmaps = output['preheat'][4].cpu().numpy()
-        joints_2ds = np.zeros((heatmaps.shape[0], heatmaps.shape[1], 3))
-        confidence = np.max(heatmaps, axis=(2,3))
-        confidence[np.where(confidence < 0.7)] = 0
-        joints_2ds[:,:,2] = confidence
-        for ind, (heatmap, trans, scale) in enumerate(zip(heatmaps, transs, scales)):
-            for j, hm in enumerate(heatmap):
-                if joints_2ds[ind][j][2] < 0.7:
-                    continue
-                joints_2ds[ind][j][:2] = np.mean(np.where(hm==joints_2ds[ind][j][2]), axis=1)[::-1]
-            joints_2ds[ind,:,0] -= trans[0]
-            joints_2ds[ind,:,1] -= trans[1]
-            joints_2ds[ind,:,:2] /= scale
+        joints = np.matmul(self.J_regressor_LSP, premeshes)
+        gt_joints = np.matmul(self.J_regressor_LSP, gt_meshes)
 
-        # img_dir = data['raw_img'][0]
-        # images = cv2.imread(img_dir)
-        # img = images.copy()
-        # for joint in joints_2ds[0]:
-        #     img = cv2.circle(img, tuple(joint[:2].astype(np.int)), 10, (0,0,255), -1)
-        #     vis_img('img', img)
+        vertex_errors = []
 
-        # get predicted meshes
-        pre_meshes = self.generator.resample_np(output['decoded'].detach().cpu().numpy())
-        meshes = self.get_abs_meshes(pre_meshes, joints_2ds, intris)
-        
-        if self.name == 'MuPoTS_origin':
-            abs_error, error, error_pa, abs_pck, pck, joints = self.eval_handler_mapper[self.name](meshes, gt_joint)
-            imnames = data['raw_img']
-            joints_2ds = np.matmul(intris, joints.transpose((0,2,1)))
-            joints_2ds = (joints_2ds[:,:2,:] / joints_2ds[:,-1:,:]).transpose((0,2,1))
-            joints = joints.tolist()
-            joints_2ds = joints_2ds.tolist()
-        else:
-            abs_error, error, error_pa, abs_pck, pck = self.eval_handler_mapper[self.name](meshes, gt_joint)
-            imnames = [None] * len(abs_error)
-            joints = [None] * len(abs_error)
-            joints_2ds = [None] * len(abs_error)
+        premesh = self.align_mesh_by_pelvis_batch(premeshes, joints, format='lsp')
+        gt_mesh = self.align_mesh_by_pelvis_batch(gt_meshes, gt_joints, format='lsp')
+
+        # for i, (pre, gt) in enumerate(zip(premesh, gt_mesh)):
+        #     self.neutral_smpl.write_obj(pre, 'output/%05d_pre.obj' % i)
+        #     self.neutral_smpl.write_obj(gt , 'output/%05d_gt.obj' % i)
+
+        vertex_errors = (np.mean(np.sqrt(np.sum((gt_mesh - premesh) ** 2, axis=-1)), axis=-1) * valids).tolist()
+
+        return vertex_errors
+
+    def evaluate(self, pred_meshes, gt_meshes, gt_joints, valids):
+        abs_error, error, error_pa, abs_pck, pck, accel = self.eval_handler_mapper[self.name](pred_meshes, gt_joints, valids)
 
         # calculate vertex error
-        if data['gt_mesh'].size(1) < 6890:
+        if gt_meshes.shape[1] < 6890:
             vertex_error = [None] * len(abs_error)
         else:
-            meshes = meshes / self.dataset_scale
-            vertex_error = self.SMPLMeshEvalHandler(meshes, data['gt_mesh'].detach().cpu().numpy())
+            # mesh in mm
+            vertex_error = self.SMPLMeshEvalHandler(pred_meshes, gt_meshes, valids)
 
-        return abs_error, error, error_pa, abs_pck, pck, imnames, joints, joints_2ds, vertex_error
+        return vertex_error, error, error_pa, abs_pck, pck, accel
 
-    def eval_poseseg(self, output, data):
-        results = {}
-        # data processing
-        transs = data['trans'].to(self.dtype).cpu().numpy()
-        scales = data['scale'].cpu().numpy()
-        img_shapes = data['img_shape'].cpu().numpy()
-        img_ids = data['image_id'].cpu().numpy().tolist()
+    def forward(self, pred_params, gt_params):
 
-        # get predicted 2D joints
-        heatmaps = output['preheat'][4].cpu().numpy()
-        masks = output['premask'][4].cpu().numpy()
-        joints_2ds = np.zeros((heatmaps.shape[0], heatmaps.shape[1], 3))
-        confidence = np.max(heatmaps, axis=(2,3))
-        scores = np.mean(confidence, axis=1)
-        confidence[np.where(confidence < 0.3)] = 0
-        joints_2ds[:,:,2] = confidence
-        seg_results = []
-        for ind, (heatmap, trans, scale, mask, shape, im_id) in enumerate(zip(heatmaps, transs, scales, masks, img_shapes, img_ids)):
-            for j, hm in enumerate(heatmap):
-                if joints_2ds[ind][j][2] < 0.3:
-                    continue
-                joints_2ds[ind][j][:2] = np.mean(np.where(hm==joints_2ds[ind][j][2]), axis=1)[::-1]
-            mask = mask[0]
-            M = np.float32([[1, 0, -trans[0]], [0, 1, -trans[1]]])
-            mask = cv2.warpAffine(mask, M, (int(shape[1]*scale), int(shape[0]*scale)), flags=cv2.INTER_CUBIC,
-                            borderMode=cv2.BORDER_CONSTANT,
-                            borderValue=(0))
-            mask = cv2.resize(mask, (int(shape[1]), int(shape[0])))
-            mask = cv2.threshold(mask, 0.5, 1, cv2.THRESH_BINARY)[1].astype(np.uint8)
-            if mask.max() < 0.01:
-                index = (np.array([0]), np.array([0]))
+        for seq in tqdm(pred_params['verts'].keys(), total=len(pred_params['verts'])):
+            pred_verts = np.array(pred_params['verts'][seq])
+
+            gt_pose = np.array(gt_params['pose'][seq])
+            gt_shape = np.array(gt_params['shape'][seq])
+            gt_trans = np.array(gt_params['trans'][seq])
+            gender = gt_params['gender'][seq][0]
+            valid = np.array(gt_params['valid'][seq])
+
+            gt_meshes, pred_meshes, inter_valid = [], [], []
+            gt_joints, pred_joints = [], []
+
+            if gender == 1:
+                smpl_model = self.male_smpl
+            elif gender == 0:
+                smpl_model = self.female_smpl
             else:
-                index = np.where(mask>0)
-            # lt = np.array([index[1].min(), index[0].min()])
-            # rb = np.array([index[1].max(), index[0].max()])
-            joints_2ds[ind,:,0] -= trans[0]
-            joints_2ds[ind,:,1] -= trans[1]
-            joints_2ds[ind,:,:2] /= scale
+                smpl_model = self.neutral_smpl
 
-            result = {
-                "image_id": im_id,
-                "category_id": 1,
-                "bbox": [float(index[1].min()), float(index[0].min()), float(index[1].max()) - float(index[1].min()), float(index[0].max()) - float(index[0].min())],
-                "score": float(scores[ind]),
-                "segmentation": maskUtils.encode(np.asfortranarray(mask))
-            }
-            seg_results.append(result)
+            p_verts = torch.from_numpy(pred_verts).contiguous()
 
-            # from utils.imutils import convert_color
-            # img_dir = data['raw_img'][ind]
-            # images = cv2.imread(img_dir)
-            # img = images.copy()
-            # for joint in joints_2ds[ind]:
-            #     if joint[2] > 0.3:
-            #         img = cv2.circle(img, tuple(joint[:2].astype(np.int)), 10, (0,0,255), -1)
-            # # img = cv2.rectangle(img, tuple(lt), tuple(rb), (0,255,255), 5)
-            # ms = convert_color(mask)
-            # img = cv2.addWeighted(ms, 0.5, img.astype(np.uint8),0.5,0)
-            # vis_img('img', img)
-        
-        alpha_kp2d = data['input_kp2d'].numpy()
-        gt_kp2d = data['gt_kp2d'].numpy()
-        alpha_mpjpe_2d = []
-        pred_mpjpe_2d = []
-        for ind, (alpha, gt, pred) in enumerate(zip(alpha_kp2d, gt_kp2d, joints_2ds)):
-            if alpha.max() < 1 or gt.max() < 1:
-                continue
-            confidence = gt[:,2]
-            gt = gt[:,:2]
-            alpha_conf = alpha[:,2]
-            alpha_conf[np.where(alpha_conf>0.5)] = 1
-            alpha_conf[np.where(alpha_conf<=0.5)] = 0
-            alpha = alpha[:,:2]
-            pred_conf = pred[:,2]
-            pred_conf[np.where(pred_conf>0.2)] = 1
-            pred_conf[np.where(pred_conf<=0.2)] = 0
-            pred = pred[:,:2]
-            # # set threshold to select visible pose for Alphapose
-            # alpha_error = np.sqrt(np.sum((alpha - gt)**2, axis=1)) * confidence * pred_conf #* alpha_conf
-            # # set threshold to select visible pose for Pred
-            # pred_error = np.sqrt(np.sum((pred - gt)**2, axis=1)) * confidence * pred_conf
-            # set threshold to select visible pose for Alphapose
-            alpha_error = np.sqrt(np.sum((alpha * np.expand_dims(alpha_conf,1).repeat(2,axis=1) - gt)**2, axis=1))
-            # set threshold to select visible pose for Pred
-            pred_error = np.sqrt(np.sum((pred * np.expand_dims(pred_conf,1).repeat(2,axis=1) - gt)**2, axis=1))
-            alpha_error = np.mean(alpha_error)
-            pred_error = np.mean(pred_error)
-            alpha_mpjpe_2d.append(alpha_error)
-            pred_mpjpe_2d.append(pred_error)
+            g_pose = torch.from_numpy(gt_pose).contiguous()
+            g_shape = torch.from_numpy(gt_shape).contiguous()
+            g_trans = torch.from_numpy(gt_trans).contiguous()
 
-        return seg_results, alpha_mpjpe_2d, pred_mpjpe_2d
+            v = valid
+
+            pred_mesh = p_verts
+            pred_joint = torch.matmul(torch.from_numpy(self.J_regressor_halpe), pred_mesh)[:,self.halpe2lsp]
+            gt_mesh, gt_joint = smpl_model(g_shape, g_pose, g_trans, halpe=True)
+            gt_joint = gt_joint[:,self.halpe2lsp]
+
+            pred_mesh = pred_mesh.detach().cpu().numpy()
+            gt_mesh = gt_mesh.detach().cpu().numpy()
+            pred_joint = pred_joint.detach().cpu().numpy()
+            gt_joint = gt_joint.detach().cpu().numpy()
+
+            vertex_error, error, error_pa, abs_pck, pck, accel = self.evaluate(pred_mesh, gt_mesh, gt_joint, v)
+            self.vertex_error += vertex_error
+            self.error += error
+            self.error_pa += error_pa
+            self.abs_pck += abs_pck
+            self.pck += pck
+            self.accel += accel
+
+
+    def calcu_interaction(self, gt_meshes, pred_meshes, inter_valid):
+        valid = np.array(inter_valid).sum(axis=0)
+
+        gt_joints_c1 = self.J_regressor_LSP @ gt_meshes[0]
+        gt_joints_c2 = self.J_regressor_LSP @ gt_meshes[1]
+
+        pred_joints_c1 = self.J_regressor_LSP @ pred_meshes[0]
+        pred_joints_c2 = self.J_regressor_LSP @ pred_meshes[1]
+
+        gt_joints_c1 = gt_joints_c1[valid == 2]
+        gt_joints_c2 = gt_joints_c2[valid == 2]
+
+        pred_joints_c1 = pred_joints_c1[valid == 2]
+        pred_joints_c2 = pred_joints_c2[valid == 2]
+
+
+        gt_joint_a, gt_joint_b = gt_joints_c1[:,:,None,:3], gt_joints_c2[:,None,:,:3]
+        gt_interaction = np.linalg.norm(gt_joint_a - gt_joint_b, axis=-1)
+
+        pred_joint_a, pred_joint_b = pred_joints_c1[:,:,None,:3], pred_joints_c2[:,None,:,:3]
+        pred_interaction = np.linalg.norm(pred_joint_a - pred_joint_b, axis=-1)
+
+        interaction = np.abs(gt_interaction - pred_interaction).mean(axis=(1,2))
+
+        interaction = interaction * 1000.
+
+        return interaction.tolist()
+
+    def calcu_loss(self, pred_poses, pred_shapes, gt_poses, gt_shapes, gt_joints, imgname, valids, is_seq):
+
+        pred_poses = np.concatenate(pred_poses)
+        pred_shapes = np.concatenate(pred_shapes)
+        gt_poses = np.concatenate(gt_poses)
+        gt_shapes = np.concatenate(gt_shapes)
+        gt_joints = np.concatenate(gt_joints)
+        valids = np.concatenate(valids)
+
+        gt_poses, gt_shapes, pred_poses, pred_shapes, gt_joints, valids = rearrange2seq(pred_poses, pred_shapes, gt_poses, gt_shapes, gt_joints, valids, imgname, is_seq)
+
+        vertex_errors, errors, error_pas, abs_pcks, pcks, accels = [], [], [], [], [], []
+        for gt_pose, gt_shape, pred_pose, pred_shape, gt_joint, valid in zip(gt_poses, gt_shapes, pred_poses, pred_shapes, gt_joints, valids):
+            trans = torch.zeros((gt_pose.shape[0], 3), dtype=torch.float32)
+            if pred_shape.shape[1] == 6890: # For OOH
+                pred_mesh = pred_shape
+            else:
+                pred_mesh, _ = self.smpl(torch.tensor(pred_shape, dtype=torch.float32), torch.tensor(pred_pose, dtype=torch.float32), trans)
+                pred_mesh = pred_mesh.detach().cpu().numpy()
+            if gt_pose.shape[1] > 1:
+                gt_mesh, _ = self.smpl(torch.tensor(gt_shape, dtype=torch.float32), torch.tensor(gt_pose, dtype=torch.float32), trans)
+                gt_mesh = gt_mesh.detach().cpu().numpy()
+            else:
+                gt_mesh = np.zeros((gt_pose.shape[0],1,3), dtype=np.float32)
+            vertex_error, error, error_pa, abs_pck, pck, accel = self.evaluate(pred_mesh, gt_mesh, gt_joint, valid)
+            vertex_errors += vertex_error
+            errors += error
+            error_pas += error_pa
+            abs_pcks += abs_pck
+            pcks += pck
+            accels += accel
+
+        if vertex_errors[0] is not None:
+            self.vertex_error += vertex_errors
+        else:
+            self.vertex_error = [-1]
+
+        self.error += errors
+        self.error_pa += error_pas
+        self.abs_pck += abs_pcks
+        self.pck += pcks
+        self.accel += accels
+
+
+    def pair_by_L2_distance(self, alpha, gt_keps, src_mapper, gt_mapper, dim=17, gt_bbox=None):
+        openpose_ant = []
+
+        for j, gt_pose in enumerate(gt_keps):
+            for i, pose in enumerate(alpha):
+                diff = np.mean(np.linalg.norm(pose[src_mapper][:,:2] - gt_pose[gt_mapper][:,:2], axis=1) * gt_pose[gt_mapper][:,2])
+                openpose_ant.append([i, j, diff, pose])
+
+        iou = sorted(openpose_ant, key=lambda x:x[2])
+
+        gt_ind = []
+        pre_ind = []
+        output = []
+        # select paired data
+        for item in iou:
+            if (not item[1] in gt_ind) and (not item[0] in pre_ind):
+                gt_ind.append(item[1])
+                pre_ind.append(item[0])
+                output.append([item[1], item[3]])
+
+        if len(output) < 1:
+            return None
+
+        return gt_ind, pre_ind
+
+
