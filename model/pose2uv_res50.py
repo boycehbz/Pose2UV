@@ -88,7 +88,7 @@ class Res_catconv(nn.Module):
         self.conv4 = nn.Conv2d(in_channels=21, out_channels=21, kernel_size=1, stride=1, padding=0, dilation=1)
 
         if pretrain_poseseg:
-            model_path = 'pretrain_model/best_viskep_mask_epoch033_0.777255.pkl'
+            model_path = 'data/best_viskep_mask_epoch033_0.777255.pkl'
             model_dict = self.state_dict()
             premodel_dict = torch.load(model_path)['model']
             premodel_dict = {'poseseg.' + k: v for k ,v in premodel_dict.items() if 'poseseg.' + k in model_dict}

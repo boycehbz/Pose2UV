@@ -5,8 +5,8 @@ from cmd_parser import parse_config
 from modules import init, DatasetLoader, ModelLoader
 from process import EvalModel
 from utils.eval_utils import HumanEval
-###########global parameters#########
-sys.argv = ['','--config=cfg_files/eval.yaml']
+# ###########global parameters#########
+# sys.argv = ['','--config=cfg_files/eval.yaml']
 
 def main(**args):
     # global setting

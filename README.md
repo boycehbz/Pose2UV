@@ -12,10 +12,13 @@ Create conda environment and install dependencies.
 ```
 conda create -n pose2uv python=3.8
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu111 # install pytorch
+
+cd utils/nms
+python setup_linux.py install
 ```
 Due to the licenses, please download SMPL model file [here](http://smplify.is.tuebingen.mpg.de/).
 
-Download trained models from [here](https://pan.baidu.com/s/1lUdfOiuH20BkNQxhBVPY6w?pwd=1gyv).
+Download trained models from [here](https://pan.baidu.com/s/1I3o_Qf12ZS0N65uVZAx-KQ?pwd=43j7).
 
 
 ## Demo
@@ -31,6 +34,11 @@ python main.py --config cfg_files/train.yaml
 ## Test
 ```
 python main.py --config cfg_files/test.yaml
+```
+
+## Eval
+```
+python eval.py --config cfg_files/eval.yaml
 ```
 
 ## Pose-Mask Module

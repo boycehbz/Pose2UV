@@ -31,7 +31,7 @@ gpu_index: 0
 
 # pretrain
 pretrain: True
-pretrain_dir: pretrain_model/best_segnet_uv_vae_epoch036_46.359337.pkl
+pretrain_dir: data/best_segnet_uv_vae_epoch036_46.359337.pkl
 
 #visualize
 viz: False
