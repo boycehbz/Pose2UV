@@ -171,7 +171,10 @@ class JointsDataset(Dataset):
         img_h, img_w = data_numpy.shape[:2]
 
         mask = db_rec['mask']
-        mask = self.annToMask(mask, data_numpy.shape[0], data_numpy.shape[1])
+        if len(mask) == 0:
+            mask = np.zeros((data_numpy.shape[0], data_numpy.shape[1]), dtype=np.uint8)
+        else:
+            mask = self.annToMask(mask, data_numpy.shape[0], data_numpy.shape[1])
 
         joints = db_rec['joints_3d'].copy()
         joints_vis = db_rec['joints_3d_vis']
@@ -301,7 +304,7 @@ class JointsDataset(Dataset):
             # 'input_heat': [target_16.float()],
             'vis': target_weight[:,0].float(),
             'img_path': image_file,
-            'img_id': os.path.basename(image_file).split('.')[0],
+            'img_id': db_rec['img_id'],
             'bbox': torch.from_numpy(bbox).float(),
             'mask': [mask_16, mask_64, mask],
             'imgnum': imgnum,

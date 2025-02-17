@@ -137,9 +137,11 @@ class COCODataset(JointsDataset):
     def _load_coco_keypoint_annotations(self):
         """ ground truth bbox and keypoints """
         gt_db = []
+        self.img_id = 0
         for seq in self.annot:
             for frame in seq:
                 gt_db.extend(self._load_coco_keypoint_annotation_kernal(frame))
+                self.img_id += 1
         return gt_db
 
 
@@ -182,7 +184,7 @@ class COCODataset(JointsDataset):
         for obj in objs:
             obj['coco_joints_2d'] = np.array(obj['coco_joints_2d'], dtype=np.float32).reshape(-1, 3)
             obj['halpe_joints_2d_pred'] = np.array(obj['halpe_joints_2d_pred'], dtype=np.float32).reshape(-1, 3)
-            
+
             # ignore objs without keypoints annotation
             if obj['coco_joints_2d'].max() == 0:
                 continue
@@ -211,6 +213,7 @@ class COCODataset(JointsDataset):
             x2, y2 = x1 + obj['clean_bbox'][2], y1 + obj['clean_bbox'][3]
             rec.append({
                 'image': img_path,
+                'img_id': self.img_id,
                 'center': center,
                 'scale': scale,
                 'joints_3d': joints_3d,
