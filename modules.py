@@ -151,7 +151,7 @@ class ModelLoader():
         self.generator = generator
         self.batchsize = batchsize
         self.output = out_dir
-            
+        self.render = Renderer()
         self.J_regressor_halpe = np.load('data/J_regressor_halpe.npy')
 
         self.test_loss = test_loss
@@ -509,7 +509,21 @@ class ModelLoader():
             uv_gt = (uv_gt + 0.5) * 255
             uv_gt = cv2.putText(uv_gt, 'uv_gt', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
 
-            img = np.concatenate((img, heatmap, mask, uv, uv_gt), axis=1)
+            joint3ds = np.matmul(self.J_regressor_halpe, gt_mesh)[:17]
+            pred_joint3ds = np.matmul(self.J_regressor_halpe, pred_mesh)[:17]
+            joint2d = joint2ds[index]
+            
+            rot, trans, intri = est_trans(gt_mesh, joint3ds, joint2d, img, focal=5000)
+            gt_render = self.render(gt_mesh, self.smpl.faces, rot.copy(), trans.copy(), intri.copy(),
+                                        img.copy(), color=[1, 1, 0.9])
+            gt_render = cv2.putText(gt_render, 'gt', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
+
+            rot, trans, intri = est_trans(pred_mesh, pred_joint3ds, joint2d, img, focal=5000)
+            pred_render = self.render(pred_mesh, self.smpl.faces, rot.copy(), trans.copy(), intri.copy(),
+                                        img.copy(), color=[1, 1, 0.9])
+            pred_render = cv2.putText(pred_render, 'pred', (20,20), cv2.FONT_HERSHEY_COMPLEX, 0.8, (255,191,105), 1)
+
+            img = np.concatenate((img, pred_render, gt_render, heatmap, mask, uv, uv_gt), axis=1)
 
             self.smpl.write_obj(
                 pred_mesh, os.path.join(output, '%05d_pred_mesh.obj' %(iter * batchsize + index) )
@@ -521,6 +535,7 @@ class ModelLoader():
 
             img_name = "%05d_img.jpg" % (iter * batchsize + index)
             cv2.imwrite(os.path.join(output, img_name), img)
+
 
         # for item in results:
         #     opt = results[item]
