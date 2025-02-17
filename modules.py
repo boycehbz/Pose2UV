@@ -296,7 +296,7 @@ class ModelLoader():
 
             data_json = {}
             data_json['bbox'] = bbox.tolist()
-            data_json['image_id'] = int(data['img_id'][i])
+            data_json['image_id'] = data['img_id'][i]
             data_json['score'] = float(np.mean(pose_scores) + 1.25 * np.max(pose_scores))
             data_json['category_id'] = 1
             data_json['keypoints'] = keypoints.reshape(-1).tolist()

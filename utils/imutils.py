@@ -282,7 +282,7 @@ def crop(img, center, scale, res, rot=0):
     new_shape = [br[1] - ul[1], br[0] - ul[0]]
     if len(img.shape) > 2:
         new_shape += [img.shape[2]]
-    new_img = np.zeros(new_shape)
+    new_img = np.zeros(new_shape, dtype=np.uint8)
 
     # Range to fill new array
     new_x = max(0, -ul[0]), min(br[0], len(img[0])) - ul[0]
@@ -298,7 +298,7 @@ def crop(img, center, scale, res, rot=0):
         new_img = scipy.ndimage.rotate(new_img, rot, reshape=False)
         new_img = new_img[pad:-pad, pad:-pad]
 
-    new_img = cv2.resize(new_img, tuple(res), interpolation=cv2.INTER_CUBIC) #scipy.misc.imresize(new_img, res)
+    new_img = cv2.resize(new_img, tuple(res), interpolation=cv2.INTER_LINEAR) #scipy.misc.imresize(new_img, res)
     return new_img, ul, br, new_shape, new_x, new_y, old_x, old_y
 
 def uncrop(img, center, scale, orig_shape, rot=0, is_rgb=True):

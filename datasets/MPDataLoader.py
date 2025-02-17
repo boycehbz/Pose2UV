@@ -9,6 +9,7 @@ import torch.utils.data as data
 from utils.imutils import *
 from utils.dataset_handle import create_UV_maps, create_poseseg
 import torchvision.transforms as transforms
+from utils.transforms import get_affine_transform, affine_transform
 
 class MPData(data.Dataset):
     def __init__(self, train=True, use_mask=False, data_folder='', smpl=None, uv_generator=None, occlusions=None, poseseg=False, name='', use_gt=False):
@@ -30,13 +31,18 @@ class MPData(data.Dataset):
         self.noise_factor = 0.4
         self.rot_factor = 30
         self.scale_factor = 0.25
-        self.normalize_img = transforms.Normalize(
+        self.normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            self.normalize,
+        ])
         self.flip_pairs = [[1, 2], [3, 4], [5, 6], [7, 8],
                            [9, 10], [11, 12], [13, 14], [15, 16]]
         self.aspect_ratio = 1.0
         self.pixel_std = 200
-
+        self.image_size = [256, 256]
+        self.heatmap_size = [256, 256]
 
         self.images = []
         self.masks = []
@@ -134,8 +140,16 @@ class MPData(data.Dataset):
 
     def rgb_processing(self, rgb_img, center, scale, rot, flip, pn):
         """Process rgb image and do augmentation."""
-        rgb_img, ul, br, new_shape, new_x, new_y, old_x, old_y = crop(rgb_img, center, scale, 
-                      [256, 256], rot=rot)
+        trans_img = get_affine_transform(center, scale, rot, self.image_size)
+
+        rgb_img = cv2.warpAffine(
+            rgb_img,
+            trans_img,
+            (int(self.image_size[0]), int(self.image_size[1])),
+            flags=cv2.INTER_LINEAR)
+
+        # rgb_img, ul, br, new_shape, new_x, new_y, old_x, old_y = crop(rgb_img, center, scale, 
+        #               [256, 256], rot=rot)
         # flip the image 
         if flip:
             rgb_img = flip_img(rgb_img)
@@ -144,15 +158,20 @@ class MPData(data.Dataset):
         rgb_img[:,:,1] = np.minimum(255.0, np.maximum(0.0, rgb_img[:,:,1]*pn[1]))
         rgb_img[:,:,2] = np.minimum(255.0, np.maximum(0.0, rgb_img[:,:,2]*pn[2]))
         # (3,224,224),float,[0,1]
-        rgb_img = np.transpose(rgb_img.astype('float32'),(2,0,1))/255.0
-        return rgb_img, ul, br, new_shape, new_x, new_y, old_x, old_y
+        # rgb_img = np.transpose(rgb_img.astype('float32'),(2,0,1))/255.0
+        return rgb_img
 
-    def j2d_processing(self, kp, center, scale, r, f):
+    def j2d_processing(self, kp, center, scale, r, f, size):
         """Process gt 2D keypoints and apply all augmentation transforms."""
+        trans = get_affine_transform(center, scale, r, size)
+
         nparts = kp.shape[0]
+
         for i in range(nparts):
-            kp[i,0:2] = transform(kp[i,0:2], center, scale, 
-                                  [256, 256], rot=r)
+            kp[i, 0:2] = affine_transform(kp[i, 0:2], trans)
+
+        #     kp[i,0:2] = transform(kp[i,0:2], center, scale, 
+        #                           [256, 256], rot=r)
         # # convert to normalized coordinates
         # kp[:,:-1] = 2.*kp[:,:-1]/256 - 1.
         # # flip the x coordinates
@@ -268,6 +287,61 @@ class MPData(data.Dataset):
         # vis_img('smpl', image)
         cv2.imwrite('vis_input/smpl.png', image)
 
+    def generate_target(self, joints, joints_vis, heatmap_size):
+        '''
+        :param joints:  [num_joints, 3]
+        :param joints_vis: [num_joints, 3]
+        :return: target, target_weight(1: visible, 0: invisible)
+        '''
+        target_weight = np.ones((joints.shape[0], 1), dtype=np.float32)
+        target_weight[:, 0] = joints_vis[:, 0]
+
+
+        if True:
+            target = np.zeros((joints.shape[0],
+                               heatmap_size[1],
+                               heatmap_size[0]),
+                              dtype=np.float32)
+
+            tmp_size = self.sigma * 3
+
+            for joint_id in range(joints.shape[0]):
+                target_weight[joint_id] = \
+                    self.adjust_target_weight(joints[joint_id], target_weight[joint_id], tmp_size, heatmap_size)
+                
+                if target_weight[joint_id] == 0:
+                    continue
+
+                mu_x = joints[joint_id][0]
+                mu_y = joints[joint_id][1]
+                
+                # 生成过程与hrnet的heatmap size不一样
+                x = np.arange(0, heatmap_size[0], 1, np.float32)
+                y = np.arange(0, heatmap_size[1], 1, np.float32)
+                y = y[:, np.newaxis]
+
+                v = target_weight[joint_id]
+                if v > 0.5:
+                    target[joint_id] = np.exp(- ((x - mu_x) ** 2 + (y - mu_y) ** 2) / (2 * self.sigma ** 2))
+
+
+        return target, target_weight
+
+    def adjust_target_weight(self, joint, target_weight, tmp_size, heatmap_size):
+        # feat_stride = self.image_size / self.heatmap_size
+        mu_x = joint[0]
+        mu_y = joint[1]
+        # Check that any part of the gaussian is in-bounds
+        ul = [int(mu_x - tmp_size), int(mu_y - tmp_size)]
+        br = [int(mu_x + tmp_size + 1), int(mu_y + tmp_size + 1)]
+        if ul[0] >= heatmap_size[0] or ul[1] >= heatmap_size[1] \
+                or br[0] < 0 or br[1] < 0:
+            # If not, just return the image as is
+            target_weight = 0
+
+        return target_weight
+
+
     def create_UV_maps(self, index=0):
         # load data
         load_data = {}
@@ -301,7 +375,7 @@ class MPData(data.Dataset):
         betas = self.shapes[index].copy()
         
         bbox = self.boxs[index].reshape(-1,)
-        center = [(bbox[2]+bbox[0])/2, (bbox[3]+bbox[1])/2]
+        center = np.array([(bbox[2]+bbox[0])/2, (bbox[3]+bbox[1])/2])
 
         scale = np.array([bbox[2]-bbox[0], bbox[3]-bbox[1]])/200.
         bbox_size = expand_to_aspect_ratio(scale*200, target_aspect_ratio=[192, 256]).max()
@@ -328,27 +402,68 @@ class MPData(data.Dataset):
         # vis_img('patch', patch)
         # vis_img('patch_mask', patch_mask)
 
-        img, crop_ul, crop_br, new_shape, new_x, new_y, old_x, old_y = self.rgb_processing(img, center, sc*scale, rot, flip, pn)
-        img = torch.from_numpy(img).float()
+        img = self.rgb_processing(img, center, sc*scale, rot, flip, pn)
+        img = img.astype(np.uint8)
 
-        # Get 2D keypoints and apply augmentation transforms
+        if self.transform:
+            input = self.transform(img)
+
         keypoints = self.gt_2ds[index][:17].copy()
-        keypoints = self.j2d_processing(keypoints, center, sc*scale, rot, flip)
+        keypoints = self.j2d_processing(keypoints, center, sc*scale, rot, flip, self.heatmap_size)
 
         pred_keypoints = self.pred_2ds[index][:17].copy()
-        pred_keypoints = self.j2d_processing(pred_keypoints, center, sc*scale, rot, flip)
+        pred_keypoints = self.j2d_processing(pred_keypoints, center, sc*scale, rot, flip, self.heatmap_size)
+
+        pred_keypoints_16 = self.pred_2ds[index][:17].copy()
+        pred_keypoints_16 = self.j2d_processing(pred_keypoints_16, center, sc*scale, rot, flip, [16, 16])
 
         if flip:
             keypoints = self.fliplr_joints(
                 keypoints, img.shape[1], self.flip_pairs)
             pred_keypoints = self.fliplr_joints(
                 pred_keypoints, img.shape[1], self.flip_pairs)
+            pred_keypoints_16 = self.fliplr_joints(
+                pred_keypoints_16, 16, self.flip_pairs)
 
-        pred_keypoints_16 = pred_keypoints.copy()
-        pred_keypoints_16[:,:2] = pred_keypoints[:,:2] / 16.
+        pred_keypoints_vis = pred_keypoints.copy()
+        pred_keypoints_vis[:,:2] = 1.
 
-        full_heat = self.generate_input(pred_keypoints, np.array([256, 256]))
-        full_heat_16 = self.generate_input(pred_keypoints_16, np.array([16, 16]))
+        pred_keypoints_16_vis = pred_keypoints_16.copy()
+        pred_keypoints_16_vis[:,:2] = 1.
+
+        full_heat, _ = self.generate_target(pred_keypoints, pred_keypoints_vis, np.array([256, 256]))
+        full_heat_16, _ = self.generate_target(pred_keypoints_16, pred_keypoints_16_vis, np.array([16, 16]))
+
+        # full_heat_16 = np.zeros((17,16,16), dtype=np.float32)
+        # full_heat = np.zeros((17,256,256), dtype=np.float32)
+
+        full_heat_16 = torch.from_numpy(full_heat_16)
+        full_heat = torch.from_numpy(full_heat)
+
+
+        # # img = torch.from_numpy(img).float()
+
+        # # Get 2D keypoints and apply augmentation transforms
+        # keypoints = self.gt_2ds[index][:17].copy()
+        # keypoints = self.j2d_processing(keypoints, center, sc*scale, rot, flip)
+
+        # pred_keypoints = self.pred_2ds[index][:17].copy()
+        # pred_keypoints = self.j2d_processing(pred_keypoints, center, sc*scale, rot, flip)
+
+
+
+        # pred_keypoints_vis = pred_keypoints.copy()
+        # pred_keypoints_vis[:,:2] = 1.
+
+        # pred_keypoints_16 = pred_keypoints.copy()
+        # pred_keypoints_16[:,:2] = pred_keypoints[:,:2] / 16.
+        # pred_keypoints_16_vis = pred_keypoints_16.copy()
+        # pred_keypoints_16_vis[:,:2] = 1.
+
+        # full_heat = self.generate_input(pred_keypoints, np.array([256, 256]))
+        # full_heat_16 = self.generate_input(pred_keypoints_16, np.array([16, 16]))
+        # full_heat, _ = self.generate_target(pred_keypoints, pred_keypoints_vis, np.array([256, 256]))
+        # full_heat_16, _ = self.generate_target(pred_keypoints_16, pred_keypoints_16_vis, np.array([16, 16]))
 
         keypoints = torch.from_numpy(keypoints).float()
         pred_keypoints = torch.from_numpy(pred_keypoints).float()
@@ -382,7 +497,7 @@ class MPData(data.Dataset):
         load_data['valid'] = 1
         load_data['verts'] = verts
         load_data['gt_3d'] = joints
-        load_data['img'] = self.normalize_img(img)
+        load_data['img'] = self.transform(img)
         load_data['origin_img'] = img
         load_data['pose'] = pose
         load_data['betas'] = betas
@@ -398,7 +513,7 @@ class MPData(data.Dataset):
         # load_data['pred_keypoints'] = pred_keypoints
         load_data['keypoints'] = keypoints
         load_data['gt_uv'] = uv
-        load_data['input_heat'] = [torch.from_numpy(full_heat_16).float(), torch.from_numpy(full_heat).float()]
+        load_data['input_heat'] = [full_heat_16.float(), full_heat.float()]
 
         vis = False
         if vis:

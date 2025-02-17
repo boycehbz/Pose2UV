@@ -20,8 +20,10 @@ def to_device(data, device):
         temp['gt_heat'] = [item.to(device) for item in data['gt_heat']]
     if 'img_path' in data.keys():
         temp['img_path'] = data['img_path']
+    if 'img_id' in data.keys():
+        temp['img_id'] = data['img_id']
 
-    data = {k:v.to(device).float() for k, v in data.items() if k not in ['mask', 'input_heat', 'gt_heat', 'img_path']}
+    data = {k:v.to(device).float() for k, v in data.items() if k not in ['mask', 'input_heat', 'gt_heat', 'img_path', 'img_id']}
 
     data = {**temp, **data}
 

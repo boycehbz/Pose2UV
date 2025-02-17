@@ -26,7 +26,7 @@ from utils.imutils import vis_img
 import torch.nn as nn
 import pycocotools.mask as maskUtils
 from utils.imutils import vis_img
-
+from utils.imutils import *
 logger = logging.getLogger(__name__)
 
 
@@ -222,7 +222,7 @@ class JointsDataset(Dataset):
                 det_pose, det_vis = fliplr_joints(
                     det_pose, det_vis, data_numpy.shape[1], self.flip_pairs)
                 c[0] = data_numpy.shape[1] - c[0] - 1
-                
+
         joints_heatmap = joints.copy()
         joints_heatmap_16 = joints.copy()
         det_pose_heatmap = det_pose.copy()
@@ -249,8 +249,6 @@ class JointsDataset(Dataset):
 
         # vis_img('img', input)
         # vis_img('mask', mask*255)
-
-        img = input.copy()
 
         if self.transform:
             input = self.transform(input)
@@ -303,7 +301,7 @@ class JointsDataset(Dataset):
             # 'input_heat': [target_16.float()],
             'vis': target_weight[:,0].float(),
             'img_path': image_file,
-            'img_id': int(os.path.basename(image_file).split('.')[0]),
+            'img_id': os.path.basename(image_file).split('.')[0],
             'bbox': torch.from_numpy(bbox).float(),
             'mask': [mask_16, mask_64, mask],
             'imgnum': imgnum,

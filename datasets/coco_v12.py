@@ -180,7 +180,9 @@ class COCODataset(JointsDataset):
 
         rec = []
         for obj in objs:
-
+            obj['coco_joints_2d'] = np.array(obj['coco_joints_2d'], dtype=np.float32).reshape(-1, 3)
+            obj['halpe_joints_2d_pred'] = np.array(obj['halpe_joints_2d_pred'], dtype=np.float32).reshape(-1, 3)
+            
             # ignore objs without keypoints annotation
             if obj['coco_joints_2d'].max() == 0:
                 continue
