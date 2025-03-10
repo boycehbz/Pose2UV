@@ -726,8 +726,8 @@ class LossLoader():
                 self.train_loss.update(LPloss=LPloss(self.device))
             if loss == 'vtloss':
                 self.train_loss.update(vtloss=vtcloss(generator).to(self.device))
-            if loss == 'boneloss':            
-                self.train_loss.update(boneloss=boneloss(generator).to(self.device))
+            if loss == 'Bone_Loss':            
+                self.train_loss.update(Bone_Loss=Bone_Loss(generator, self.device).to(self.device))
             if loss == 'shapeloss':            
                 self.train_loss.update(shapeloss=shapeloss(generator).to(self.device))
             if loss == 'ocheat_loss':            
@@ -784,6 +784,9 @@ class LossLoader():
             elif ltype == 'Edge_Loss':
                 Edge_Loss = self.train_loss['Edge_Loss'](pred['pred_verts'], data['verts'], data['uv_flag'])
                 loss_dict = {**loss_dict, **Edge_Loss}
+            elif ltype == 'Bone_Loss':
+                Bone_Loss = self.train_loss['Bone_Loss'](pred['pred_verts'])
+                loss_dict = {**loss_dict, **Bone_Loss}
             elif ltype == 'Surface_smooth_Loss':
                 Surface_smooth_Loss = self.train_loss['Surface_smooth_Loss'](pred['pred_verts'])
                 loss_dict = {**loss_dict, **Surface_smooth_Loss}

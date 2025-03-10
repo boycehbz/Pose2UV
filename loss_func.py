@@ -246,7 +246,7 @@ class Edge_Loss(nn.Module):
         edge_loss += self.criterion_edge(pred_edge3, gt_edge3)
         edge_loss = edge_loss
 
-        loss_dict['edge_loss'] = edge_loss
+        loss_dict['edge_loss'] = edge_loss * self.edge_weight
 
         return loss_dict
 
@@ -446,24 +446,23 @@ class vaeloss(nn.Module):
         loss = torch.sum(torch.sqrt(torch.sum(mean**2, dim=1))) * 20 / batch_size
         return loss
 
-class boneloss(nn.Module):
-    def __init__(self, generator):
-        super(boneloss, self).__init__()
-        self.generator  = generator
-        self.L1Loss = torch.nn.L1Loss(size_average=False) # L1Loss MSELoss
-        J_regressor = np.load('data/J_regressor_h36m.npy')
-        self.J_regressor = torch.from_numpy(J_regressor).float()
-        # mean_bone = np.load('data/bone_length.npy')
-        # self.mean_bone = torch.from_numpy(mean_bone).float()
-    def forward(self, pre):
-        batch_size = pre.size(0)
-        pre = self.generator.resample_t(pre).to(pre.device)
-        pre_joints = torch.tensordot(pre, self.J_regressor.to(pre.device), dims=([1], [1])).transpose(1, 2)
-        pre_bone, flip_bone = cal_bonelength(pre_joints)
-        # mean_bone = self.mean_bone.repeat(pre_bone.size(0),1,1).to(pre.device)
-        # loss = self.L1Loss(pre_bone, mean_bone)
-        loss = self.L1Loss(pre_bone, flip_bone) / batch_size
-        return loss
+class Bone_Loss(nn.Module):
+    def __init__(self, generator, device):
+        super(Bone_Loss, self).__init__()
+        self.generator = generator
+        self.device = device
+        self.bone_weight = 1.0
+        self.L1Loss = torch.nn.L1Loss() # L1Loss MSELoss
+        self.J_regressor = torch.from_numpy(np.load('data/J_regressor_h36m.npy')).float().to(self.device)
+
+    def forward(self, verts):
+        loss_dict = {}
+        joints = torch.tensordot(verts, self.J_regressor, dims=([1], [1])).permute(0, 2, 1)
+        pre_bone, flip_bone = cal_bonelength(joints)
+        loss = self.L1Loss(pre_bone, flip_bone)
+
+        loss_dict['Bone_Loss'] = loss * self.bone_weight
+        return loss_dict
 
 class shapeloss(nn.Module):
     def __init__(self, generator):
