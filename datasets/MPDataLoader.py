@@ -56,6 +56,7 @@ class MPData(data.Dataset):
         self.gt_2ds = []
         self.gt_3ds = []
         self.pred_2ds = []
+        self.valids = []
 
         params = self.load_pkl(self.dataset)
 
@@ -89,6 +90,7 @@ class MPData(data.Dataset):
                     self.gt_3ds.append(gt_3d)
                     self.intris.append(np.array(frame[key]['intri'], dtype=self.np_type))
                     self.masks.append(None)
+                    self.valids.append(np.array(frame[key]['valid'], dtype=self.np_type))
 
         del frame
         del params
@@ -494,7 +496,7 @@ class MPData(data.Dataset):
         load_data['mask_flag'] = np.array([0], dtype=np.float32)
         load_data['has_3d'] = np.ones(1)
         load_data['has_smpl'] = np.ones(1)
-        load_data['valid'] = 1
+        load_data['valid'] = self.valids[index]
         load_data['verts'] = verts
         load_data['gt_3d'] = joints
         load_data['img'] = self.transform(img)

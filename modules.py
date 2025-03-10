@@ -146,12 +146,15 @@ class DatasetLoader():
         return dataset
 
 class ModelLoader():
-    def __init__(self, model=None, lr=0.0001, device=torch.device('cpu'), pretrain=False, pretrain_dir='', out_dir='', smpl=None, generator=None, batchsize=32, pretrain_poseseg=False, uv_mask=None, test_loss='MPJPE', **kwargs):
+    def __init__(self, model=None, lr=0.0001, device=torch.device('cpu'), pretrain=False, pretrain_dir='', out_dir='', smpl=None, generator=None, batchsize=32, pretrain_poseseg=False, uv_mask=None, test_loss='MPJPE', task='', **kwargs):
         self.smpl = smpl
         self.generator = generator
         self.batchsize = batchsize
         self.output = out_dir
-        self.render = Renderer()
+        if task == 'demo':
+            self.render = None
+        else:
+            self.render = Renderer()
         self.J_regressor_halpe = np.load('data/J_regressor_halpe.npy')
 
         self.test_loss = test_loss
@@ -708,6 +711,8 @@ class LossLoader():
                 self.train_loss.update(w_L1=weight_L1(self.device))
             if loss == 'SMPL_Loss':
                 self.train_loss.update(SMPL_Loss=SMPL_Loss(self.device, self.smpl, self.generator))
+            if loss == 'Edge_Loss':
+                self.train_loss.update(Edge_Loss=Edge_Loss(self.device, self.smpl, self.generator))
             if loss == 'Surface_smooth_Loss':
                 self.train_loss.update(Surface_smooth_Loss=Surface_smooth_Loss(self.device, self.smpl.faces))
             if loss == 'L1':
@@ -776,6 +781,9 @@ class LossLoader():
             elif ltype == 'SMPL_Loss':
                 SMPL_loss = self.train_loss['SMPL_Loss'](pred['pred_verts'], data['verts'], data['uv_flag'])
                 loss_dict = {**loss_dict, **SMPL_loss}
+            elif ltype == 'Edge_Loss':
+                Edge_Loss = self.train_loss['Edge_Loss'](pred['pred_verts'], data['verts'], data['uv_flag'])
+                loss_dict = {**loss_dict, **Edge_Loss}
             elif ltype == 'Surface_smooth_Loss':
                 Surface_smooth_Loss = self.train_loss['Surface_smooth_Loss'](pred['pred_verts'])
                 loss_dict = {**loss_dict, **Surface_smooth_Loss}

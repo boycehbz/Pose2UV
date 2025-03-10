@@ -21,7 +21,14 @@ class MP_Eval_Data(MPData):
                     self.seq_ids.append(s_id)
                     self.frame_ids.append(f_id)
                     if 'gender' in frame[key].keys():
-                        self.genders.append(frame[key]['gender'])
+                        if frame[key]['gender'] == 'male':
+                            self.genders.append(np.array(1, dtype=np.float32))
+                        elif frame[key]['gender'] == 'female':
+                            self.genders.append(np.array(0, dtype=np.float32))
+                        elif frame[key]['gender'] == 'neutral':
+                            self.genders.append(np.array(-1, dtype=np.float32))
+                        else:
+                            self.genders.append(frame[key]['gender'])
                     else:
                         self.genders.append(np.array(-1, dtype=np.float32))
 

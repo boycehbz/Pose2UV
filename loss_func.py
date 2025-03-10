@@ -215,6 +215,41 @@ class MASK_L1(nn.Module):
 
         return loss * self.weight
 
+class Edge_Loss(nn.Module):
+    def __init__(self, device, smpl, generator):
+        super(Edge_Loss, self).__init__()
+        self.device = device
+        self.smpl = smpl
+        self.generator = generator
+        self.regressor = torch.tensor(np.load('data/J_regressor_halpe.npy').astype(np.float32)).to(self.device)
+        self.criterion_edge = nn.L1Loss().to(self.device)
+        self.edge_weight = 1.0
+        self.faces1 = smpl.faces[:,0].tolist()
+        self.faces2 = smpl.faces[:,1].tolist()
+        self.faces3 = smpl.faces[:,2].tolist()
+
+    def forward(self, pred_verts, gt_verts, flag):
+        loss_dict = {}
+
+        pred_verts = pred_verts[flag==1]
+        gt_verts = gt_verts[flag==1]
+
+        pred_edge1 = torch.sum(torch.abs(pred_verts[:,self.faces1] - pred_verts[:,self.faces2]), dim=2)
+        pred_edge2 = torch.sum(torch.abs(pred_verts[:,self.faces1] - pred_verts[:,self.faces3]), dim=2)
+        pred_edge3 = torch.sum(torch.abs(pred_verts[:,self.faces2] - pred_verts[:,self.faces3]), dim=2)
+        gt_edge1 = torch.sum(torch.abs(gt_verts[:,self.faces1] - gt_verts[:,self.faces2]), dim=2)
+        gt_edge2 = torch.sum(torch.abs(gt_verts[:,self.faces1] - gt_verts[:,self.faces3]), dim=2)
+        gt_edge3 = torch.sum(torch.abs(gt_verts[:,self.faces2] - gt_verts[:,self.faces3]), dim=2)
+
+        edge_loss = self.criterion_edge(pred_edge1, gt_edge1)
+        edge_loss += self.criterion_edge(pred_edge2, gt_edge2)
+        edge_loss += self.criterion_edge(pred_edge3, gt_edge3)
+        edge_loss = edge_loss
+
+        loss_dict['edge_loss'] = edge_loss
+
+        return loss_dict
+
 class MPJPE(nn.Module):
     def __init__(self, generator, device, dtype=torch.float32):
         super(MPJPE, self).__init__()
