@@ -90,7 +90,13 @@ class MPData(data.Dataset):
                     self.gt_3ds.append(gt_3d)
                     self.intris.append(np.array(frame[key]['intri'], dtype=self.np_type))
                     self.masks.append(None)
-                    self.valids.append(np.array(frame[key]['valid'], dtype=self.np_type))
+                    if 'valid' in frame[key].keys():
+                        if frame[key]['valid'] is None:
+                            self.valids.append(np.ones(1, dtype=self.np_type))
+                        else:
+                            self.valids.append(np.array(frame[key]['valid'], dtype=self.np_type).reshape(1,))
+                    else:
+                        self.valids.append(np.ones(1, dtype=self.np_type))
 
         del frame
         del params
