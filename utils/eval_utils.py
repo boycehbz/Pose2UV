@@ -57,7 +57,9 @@ class HumanEval(nn.Module):
         self.dtype = dtype
 
         # self.sdf_loss = SDFLoss(self.neutral_smpl.faces, self.neutral_smpl.faces, robustifier=None).cuda()
-
+        if name == '3DMPB':
+            name = 'VCL3DMPB'
+            
         self.name = name
         self.J_regressor_H36 = np.load('data/J_regressor_h36m.npy').astype(np.float32)
         self.J_regressor_LSP = np.load('data/J_regressor_lsp.npy').astype(np.float32)
@@ -524,7 +526,7 @@ class HumanEval(nn.Module):
             gt_shape = np.array(gt_params['shape'][seq])
             gt_trans = np.array(gt_params['trans'][seq])
             gender = gt_params['gender'][seq][0]
-            valid = np.array(gt_params['valid'][seq])
+            valid = np.array(gt_params['valid'][seq]).reshape(-1,)
 
             gt_meshes, pred_meshes, inter_valid = [], [], []
             gt_joints, pred_joints = [], []

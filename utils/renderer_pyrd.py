@@ -18,7 +18,7 @@ import cv2
 class Renderer_inp(object):
 
     def __init__(self, focal_length=600, img_w=512, img_h=512, faces=None,
-                 same_mesh_color=False):
+                 same_mesh_color=True):
         # os.environ['PYOPENGL_PLATFORM'] = 'egl'
         self.renderer = pyrender.OffscreenRenderer(viewport_width=img_w,
                                                    viewport_height=img_h,
@@ -28,7 +28,7 @@ class Renderer_inp(object):
         self.faces = faces
         self.same_mesh_color = same_mesh_color
 
-    def render_front_view(self, verts, bg_img_rgb=None, bg_color=(0, 0, 0, 0)):
+    def render_front_view(self, verts, bg_img_rgb=None, bg_color=(1.0, 1.0, 1.0, 0)):
         # Create a scene for each image and render all meshes
         scene = pyrender.Scene(bg_color=bg_color, ambient_light=np.ones(3) * 0)
         # Create camera. Camera will always be at [0,0,0]
@@ -53,7 +53,7 @@ class Renderer_inp(object):
             mesh = trimesh.Trimesh(verts[n], self.faces)
             mesh.apply_transform(rot)
             if self.same_mesh_color:
-                mesh_color = colorsys.hsv_to_rgb(0.6, 0.5, 1.0)
+                mesh_color = (0.7, 0.7, 0.7) # colorsys.hsv_to_rgb(0.6, 0.5, 1.0)
             else:
                 mesh_color = colorsys.hsv_to_rgb(float(n) / num_people, 0.5, 1.0)
             material = pyrender.MetallicRoughnessMaterial(

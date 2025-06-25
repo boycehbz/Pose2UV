@@ -628,11 +628,14 @@ class ModelLoader():
             rot, transl, intri = est_trans(mesh, joint3d, joint2d, img_render, focal=1000)
 
             abs_meshes.append(mesh + transl)
+        abs_meshes = np.array(abs_meshes)
 
 
         render = Renderer_inp(focal_length=1000, img_w=img.shape[1], img_h=img.shape[0], faces=self.smpl.faces)
 
         rendered = render.render_front_view(abs_meshes, img.copy())
+        side_view = render.render_side_view(abs_meshes)
+        rendered = np.concatenate((img, rendered, side_view), axis=1)
         render.delete()
         # vis_img('img', rendered)
 
