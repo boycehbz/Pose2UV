@@ -18,8 +18,7 @@ python setup_linux.py install
 ```
 Due to the licenses, please download SMPL model file [here](http://smplify.is.tuebingen.mpg.de/).
 
-Download trained models from [here](https://pan.baidu.com/s/1I3o_Qf12ZS0N65uVZAx-KQ?pwd=43j7).
-
+Download trained models from [here](https://pan.baidu.com/s/1WqO5Rhdx32GHaiXxdVkzpw?pwd=nus5).
 
 ## Demo
 ```
